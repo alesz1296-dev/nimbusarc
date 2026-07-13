@@ -1,0 +1,71 @@
+import type { Scenario } from "../../../domain/types";
+
+export const awsScenarios: Scenario[] = [
+  {
+    id: "aws-saa-ha-web-private-db",
+    provider: "aws",
+    certificationTrack: "aws-saa",
+    title: "Highly Available Web App With Private Database",
+    domain: "reliability",
+    difficulty: "associate",
+    prompt:
+      "A company needs to host a public web application. The app must be highly available across two Availability Zones. Web traffic should enter through a managed load balancer. Application servers should scale horizontally. The database must not be publicly reachable. Basic monitoring is required.",
+    requirements: [
+      "Use a managed public entry point for web traffic.",
+      "Run the application tier across multiple Availability Zones.",
+      "Keep the relational database private.",
+      "Include basic operational monitoring.",
+    ],
+    constraints: [
+      "Do not deploy directly to a real AWS account.",
+      "Prefer managed services where they improve availability.",
+      "Avoid public database exposure.",
+    ],
+    rules: [
+      {
+        id: "requires-alb",
+        provider: "aws",
+        type: "requires-service",
+        severity: "critical",
+        domain: "reliability",
+        points: 20,
+        message: "Use an Application Load Balancer as the managed public entry point.",
+        hint: "Public HTTP workloads usually enter through ALB before reaching private app targets.",
+        docsRefs: ["aws-alb"],
+      },
+      {
+        id: "requires-private-rds",
+        provider: "aws",
+        type: "requires-zone",
+        severity: "critical",
+        domain: "security",
+        points: 25,
+        message: "Place RDS in a private data tier.",
+        hint: "SAA scenarios usually expect databases to avoid direct public reachability.",
+        docsRefs: ["aws-rds", "aws-private-subnet"],
+      },
+      {
+        id: "requires-auto-scaling",
+        provider: "aws",
+        type: "requires-service",
+        severity: "warning",
+        domain: "reliability",
+        points: 20,
+        message: "Add an Auto Scaling Group for horizontal scale and self-healing.",
+        hint: "A single EC2 instance is rarely enough when the prompt asks for high availability.",
+        docsRefs: ["aws-auto-scaling"],
+      },
+      {
+        id: "requires-cloudwatch",
+        provider: "aws",
+        type: "requires-service",
+        severity: "info",
+        domain: "operations",
+        points: 10,
+        message: "Add CloudWatch for metrics, logs, and alarms.",
+        hint: "Operational visibility is a common SAA expectation for production designs.",
+        docsRefs: ["aws-cloudwatch"],
+      },
+    ],
+  },
+];
