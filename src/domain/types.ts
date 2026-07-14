@@ -11,18 +11,56 @@ export type LearningDomain =
 
 export type Difficulty = "foundational" | "associate" | "advanced";
 
+export type RelationalTablePreview = {
+  name: string;
+  columns: string[];
+  rows: string[][];
+};
+
+export type DocumentCollectionPreview = {
+  name: string;
+  partitionKey: string;
+  sortKey?: string;
+  documents: Array<Record<string, string | number | boolean>>;
+};
+
+export type CacheEntryPreview = {
+  key: string;
+  ttl?: string;
+  value: string;
+};
+
+export type DatabaseInspectionModel =
+  | {
+      kind: "relational";
+      engine: string;
+      tables: RelationalTablePreview[];
+    }
+  | {
+      kind: "document";
+      engine: string;
+      collections: DocumentCollectionPreview[];
+    }
+  | {
+      kind: "cache";
+      engine: string;
+      entries: CacheEntryPreview[];
+    };
+
 export type CloudService = {
   id: string;
   provider: CloudProvider;
   name: string;
   category: string;
   shortDescription: string;
+  configurationGuidance?: string[];
   certificationTracks: CertificationTrack[];
   examSignals: string[];
   commonUseCases: string[];
   commonTraps: string[];
   docsUrl: string;
   allowedConnections: string[];
+  databaseInspection?: DatabaseInspectionModel;
 };
 
 export type RuleType =
