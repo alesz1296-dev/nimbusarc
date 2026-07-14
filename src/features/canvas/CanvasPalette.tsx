@@ -18,6 +18,7 @@ type CanvasPaletteProps = {
   selectedZoneId?: string;
   activeNodeCount: number;
   onAddService: (service: CloudService) => void;
+  onAddRouteTable: () => void;
   onInspectService: (service: CloudService) => void;
   onAddZone: (kind: "region" | "vpc" | "availability-zone" | "subnet-public" | "subnet-private") => void;
   onReorderZoneLayer: (zoneId: string, direction: "up" | "down") => void;
@@ -39,7 +40,20 @@ export function CanvasPalette({ mode, onModeChange, ...props }: CanvasPalettePro
         <button className={mode === "quotas" ? "palette-mode palette-mode--active" : "palette-mode"} onClick={() => onModeChange("quotas")} role="tab" aria-selected={mode === "quotas"} type="button"><Gauge size={16} aria-hidden="true" /> Quotas</button>
       </div>
       {mode === "services" ? <ServicePalette activeNodeCount={props.activeNodeCount} onAddService={props.onAddService} onInspectService={props.onInspectService} services={props.services} /> : null}
-      {mode === "network" ? <ZonePalette onAddZone={props.onAddZone} onDeleteSelectedZone={props.onDeleteSelectedZone} onReorderZoneLayer={props.onReorderZoneLayer} onSelectZone={props.onSelectZone} selectedZoneId={props.selectedZoneId} zones={props.zones} /> : null}
+      {mode === "network" ? (
+        <ZonePalette
+          onAddService={props.onAddService}
+          onAddRouteTable={props.onAddRouteTable}
+          onAddZone={props.onAddZone}
+          onDeleteSelectedZone={props.onDeleteSelectedZone}
+          onInspectService={props.onInspectService}
+          onReorderZoneLayer={props.onReorderZoneLayer}
+          onSelectZone={props.onSelectZone}
+          selectedZoneId={props.selectedZoneId}
+          services={props.services}
+          zones={props.zones}
+        />
+      ) : null}
       {mode === "security" ? (
         <ArchitectureAnalysisPanel
           eyebrow="AWS SAA"

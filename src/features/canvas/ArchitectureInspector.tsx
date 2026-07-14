@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
 import { ExternalLink, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, X } from "lucide-react";
-import type { ArchitectureEdge, ArchitectureEdgeKind, ArchitectureNode, ArchitectureNodeConfig, ArchitectureZone } from "../../domain/graph";
+import type { ArchitectureEdge, ArchitectureEdgeKind, ArchitectureGraph, ArchitectureNode, ArchitectureNodeConfig, ArchitectureRoute, ArchitectureRouteTable, ArchitectureZone } from "../../domain/graph";
 import type { CacheEntryPreview, CloudService, DocumentCollectionPreview, RelationalTablePreview } from "../../domain/types";
 import { AwsServiceIcon } from "../../ui/AwsServiceIcon";
 import { Panel } from "../../ui/Panel";
 
 type ArchitectureInspectorProps = {
   edge?: ArchitectureEdge;
+  graph?: ArchitectureGraph;
   node?: ArchitectureNode;
+  routeTable?: ArchitectureRouteTable;
   zone?: ArchitectureZone;
   service?: CloudService;
   servicesById?: Map<string, CloudService>;
@@ -15,6 +17,7 @@ type ArchitectureInspectorProps = {
   onUpdateEdge: (changes: Partial<Pick<ArchitectureEdge, "kind" | "label" | "direction" | "controls">>) => void;
   onUpdateNodeConfig: (changes: ArchitectureNode["config"]) => void;
   onUpdateNodeLabel: (label: string) => void;
+  onUpdateRouteTable: (changes: Partial<Pick<ArchitectureRouteTable, "label" | "vpcId" | "associatedSubnetIds" | "routes">>) => void;
   onUpdateZone: (changes: Partial<Pick<ArchitectureZone, "label" | "description" | "config">>) => void;
 };
 
@@ -48,6 +51,24 @@ const routeTargets = [
   { label: "Site-to-Site VPN", value: "vpn-gateway" },
   { label: "VPC Endpoint", value: "vpc-endpoint" },
 ] as const;
+
+const routeTableTargetOptions: Array<{ label: string; value: ArchitectureRoute["targetType"] }> = [
+  { label: "Local", value: "local" },
+  { label: "Internet Gateway", value: "internet-gateway" },
+  { label: "NAT Gateway", value: "nat-gateway" },
+  { label: "Egress-only IGW", value: "egress-only-igw" },
+  { label: "Transit Gateway", value: "transit-gateway" },
+  { label: "Site-to-Site VPN", value: "vpn-gateway" },
+  { label: "VPC Endpoint", value: "vpc-endpoint" },
+];
+
+const routeTargetServiceMap: Partial<Record<ArchitectureRoute["targetType"], string[]>> = {
+  "internet-gateway": ["aws-internet-gateway"],
+  "nat-gateway": ["aws-nat-gateway"],
+  "transit-gateway": ["aws-transit-gateway"],
+  "vpn-gateway": ["aws-vpn-gateway"],
+  "vpc-endpoint": ["aws-vpc-endpoint"],
+};
 
 type InspectorField =
   | { kind: "toggle"; key: keyof ArchitectureNodeConfig; label: string }
@@ -397,7 +418,9 @@ function getAdvancedConfiguration(service: CloudService): string[] {
 
 export function ArchitectureInspector({
   edge,
+  graph,
   node,
+  routeTable,
   zone,
   service,
   servicesById,
@@ -405,6 +428,7 @@ export function ArchitectureInspector({
   onUpdateEdge,
   onUpdateNodeConfig,
   onUpdateNodeLabel,
+  onUpdateRouteTable,
   onUpdateZone,
 }: ArchitectureInspectorProps) {
   const [zoneErrors, setZoneErrors] = useState<Record<string, string>>({});
@@ -612,6 +636,138 @@ export function ArchitectureInspector({
             <DatabaseInspectionPreview service={service} />
           ) : null}
           <p className="inspector__hint">Configuration will feed architecture validation and IaC generation in later phases.</p>
+        </div>
+      </Panel>
+    );
+  }
+
+  if (routeTable) {
+    const updateRoute = (routeId: string, changes: Partial<ArchitectureRoute>) => {
+      onUpdateRouteTable({
+        routes: routeTable.routes.map((route) => route.id === routeId ? { ...route, ...changes } : route),
+      });
+    };
+
+    const addRoute = () => {
+      onUpdateRouteTable({
+        routes: [
+          ...routeTable.routes,
+          {
+            id: `${routeTable.id}-route-${routeTable.routes.length + 1}`,
+            destination: "0.0.0.0/0",
+            targetType: "nat-gateway",
+            status: "active",
+            learningNote: "Default routes decide where traffic goes when no more-specific route matches.",
+          },
+        ],
+      });
+    };
+
+    const removeRoute = (routeId: string) => {
+      onUpdateRouteTable({ routes: routeTable.routes.filter((route) => route.id !== routeId) });
+    };
+
+    return (
+      <Panel className={panelClassName} style={panelStyle} actions={inspectorActions} title="Inspector" eyebrow="Selected route table">
+        {resizeHandle}
+        <div className="inspector">
+          <div className="inspector__identity">
+            <div className="zone-inspector__swatch zone-inspector__swatch--vpc" />
+            <div>
+              <strong>{routeTable.label}</strong>
+              <small>{routeTable.associatedSubnetIds.length} associated subnet{routeTable.associatedSubnetIds.length === 1 ? "" : "s"}</small>
+            </div>
+          </div>
+          <label className="inspector__field">
+            <span>Route table name</span>
+            <input
+              defaultValue={routeTable.label}
+              key={routeTable.id}
+              onBlur={(event) => onUpdateRouteTable({ label: event.target.value.trim() || routeTable.label })}
+            />
+          </label>
+          <div className="inspector__service-template">
+            <strong>Associated subnets</strong>
+            <p>{routeTable.associatedSubnetIds.join(", ")}</p>
+          </div>
+          <details className="inspector__section" open>
+            <summary>Routes</summary>
+            <div className="inspector__section-body">
+              {routeTable.routes.map((route) => (
+                (() => {
+                  const targetServiceIds = routeTargetServiceMap[route.targetType] ?? [];
+                  const eligibleTargets = targetServiceIds.length > 0
+                    ? (graph?.nodes ?? []).filter((candidate) => targetServiceIds.includes(candidate.serviceId))
+                    : [];
+
+                  return (
+                <section className="route-row" key={route.id}>
+                  <label className="inspector__field">
+                    <span>Destination</span>
+                    <input
+                      value={route.destination}
+                      onChange={(event) => updateRoute(route.id, { destination: event.target.value })}
+                      placeholder="0.0.0.0/0"
+                    />
+                  </label>
+                  <label className="inspector__field">
+                    <span>Target</span>
+                    <select
+                      value={route.targetType}
+                      onChange={(event) => updateRoute(route.id, { targetType: event.target.value as ArchitectureRoute["targetType"], targetId: undefined })}
+                    >
+                      {routeTableTargetOptions.map((target) => (
+                        <option key={target.value} value={target.value}>{target.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {route.targetType !== "local" ? (
+                    <label className="inspector__field">
+                      <span>Target resource</span>
+                      <select
+                        value={route.targetId ?? ""}
+                        onChange={(event) => updateRoute(route.id, { targetId: event.target.value || undefined })}
+                      >
+                        <option value="">Select placed resource</option>
+                        {eligibleTargets.map((target) => (
+                          <option key={target.id} value={target.id}>{target.label}</option>
+                        ))}
+                      </select>
+                      {eligibleTargets.length === 0 ? <small>No matching placed gateway exists yet.</small> : null}
+                    </label>
+                  ) : null}
+                  <label className="inspector__field">
+                    <span>Status</span>
+                    <select
+                      value={route.status ?? "active"}
+                      onChange={(event) => updateRoute(route.id, { status: event.target.value as ArchitectureRoute["status"] })}
+                    >
+                      <option value="active">Active</option>
+                      <option value="blackhole">Blackhole</option>
+                      <option value="invalid">Invalid</option>
+                    </select>
+                  </label>
+                  <label className="inspector__field">
+                    <span>Learning note</span>
+                    <textarea
+                      value={route.learningNote ?? ""}
+                      onChange={(event) => updateRoute(route.id, { learningNote: event.target.value || undefined })}
+                      rows={3}
+                    />
+                  </label>
+                  <button className="inspector__secondary-action" onClick={() => removeRoute(route.id)} type="button">
+                    Remove route
+                  </button>
+                </section>
+                  );
+                })()
+              ))}
+              <button className="inspector__secondary-action inspector__secondary-action--strong" onClick={addRoute} type="button">
+                Add route
+              </button>
+            </div>
+          </details>
+          <p className="inspector__hint">Subnets inherit outbound behavior from their associated route table. This is what makes a subnet public, private, or isolated.</p>
         </div>
       </Panel>
     );

@@ -1,13 +1,20 @@
-import { ArrowDown, ArrowUp, GripVertical, Layers, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, CircleHelp, GripVertical, Layers, Plus, Trash2 } from "lucide-react";
 import type { DragEvent } from "react";
 import type { ArchitectureZone } from "../../domain/graph";
+import type { CloudService } from "../../domain/types";
 import { Panel } from "../../ui/Panel";
+import { AwsServiceIcon } from "../../ui/AwsServiceIcon";
+import { isNetworkPaletteService, networkPaletteServiceIds } from "./networkPaletteServices";
 
 type ZoneAddKind = "region" | "vpc" | "availability-zone" | "subnet-public" | "subnet-private";
 
 type ZonePaletteProps = {
+  services: CloudService[];
   zones: ArchitectureZone[];
   selectedZoneId?: string;
+  onAddService: (service: CloudService) => void;
+  onAddRouteTable: () => void;
+  onInspectService: (service: CloudService) => void;
   onAddZone: (kind: ZoneAddKind) => void;
   onReorderZoneLayer: (zoneId: string, direction: "up" | "down") => void;
   onSelectZone: (zoneId: string) => void;
@@ -50,8 +57,32 @@ function handleZoneActionDragStart(event: DragEvent<HTMLButtonElement>, kind: Zo
   }));
 }
 
-export function ZonePalette({ zones, selectedZoneId, onAddZone, onReorderZoneLayer, onSelectZone, onDeleteSelectedZone }: ZonePaletteProps) {
+function handleServiceDragStart(event: DragEvent<HTMLElement>, service: CloudService) {
+  event.dataTransfer.effectAllowed = "copy";
+  event.dataTransfer.setData("application/x-nimbusarc-palette", JSON.stringify({
+    type: "service",
+    serviceId: service.id,
+  }));
+}
+
+export function ZonePalette({
+  services,
+  zones,
+  selectedZoneId,
+  onAddService,
+  onAddRouteTable,
+  onInspectService,
+  onAddZone,
+  onReorderZoneLayer,
+  onSelectZone,
+  onDeleteSelectedZone,
+}: ZonePaletteProps) {
   const orderedZones = [...zones].sort((left, right) => (right.layerOrder ?? 0) - (left.layerOrder ?? 0));
+  const paletteServices = services.filter((service) =>
+    isNetworkPaletteService(service.id)
+    && !["aws-vpc", "aws-public-subnet", "aws-private-subnet"].includes(service.id)
+    && networkPaletteServiceIds.includes(service.id as (typeof networkPaletteServiceIds)[number]),
+  );
 
   return (
     <Panel
@@ -74,6 +105,10 @@ export function ZonePalette({ zones, selectedZoneId, onAddZone, onReorderZoneLay
               <span><strong>{action.label}</strong><small>{action.detail}</small></span>
             </button>
           ))}
+          <button className="zone-action" onClick={onAddRouteTable} type="button">
+            <span className="zone-action__icon"><Plus size={15} aria-hidden="true" /></span>
+            <span><strong>Route Table</strong><small>Subnet routing rules</small></span>
+          </button>
         </div>
         <div className="zone-palette__list">
           <div className="zone-palette__list-header">
@@ -113,6 +148,46 @@ export function ZonePalette({ zones, selectedZoneId, onAddZone, onReorderZoneLay
                   <ArrowDown size={14} aria-hidden="true" />
                 </button>
               </div>
+            </div>
+          ))}
+        </div>
+        <div className="zone-palette__services">
+          <div className="zone-palette__list-header">
+            <span>Network services</span>
+            <span>{paletteServices.length} available</span>
+          </div>
+          {paletteServices.map((service) => (
+            <div className="service-tile" key={service.id}>
+              <div
+                aria-label={`Add ${service.name} to the canvas`}
+                className="service-tile__main"
+                draggable
+                onClick={() => onAddService(service)}
+                onDragStart={(event) => handleServiceDragStart(event, service)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onAddService(service);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <AwsServiceIcon label={service.name} serviceId={service.id} />
+                <span className="service-tile__content">
+                  <span>{service.name}</span>
+                  <small>{service.category}</small>
+                </span>
+              </div>
+              <button
+                aria-label={`More information about ${service.name}`}
+                className="service-tile__info"
+                onClick={() => onInspectService(service)}
+                title={`Learn more about ${service.name}`}
+                type="button"
+              >
+                <CircleHelp aria-hidden="true" size={16} />
+              </button>
             </div>
           ))}
         </div>

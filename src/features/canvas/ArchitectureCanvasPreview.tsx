@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Download, FileStack, Link2, Lock, Play, Redo2, RotateCcw, Save, Search, ShieldCheck, SlidersHorizontal, Trash2, Undo2, Unlink, Upload } from "lucide-react";
-import type { ArchitectureEdgeId, ArchitectureGraph, ArchitectureZone, ArchitectureZoneId, FlowSimulationSnapshot } from "../../domain/graph";
+import { AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Download, FileStack, Link2, Play, Redo2, RotateCcw, Route, Save, Search, ShieldCheck, SlidersHorizontal, Trash2, Undo2, Unlink, Upload } from "lucide-react";
+import type { ArchitectureEdgeId, ArchitectureGraph, ArchitectureRouteTableId, ArchitectureZone, ArchitectureZoneId, FlowSimulationSnapshot } from "../../domain/graph";
 import type { ArchitectureIssue } from "../../domain/architectureValidation";
 import type { ConfigurationIssue } from "../../domain/configurationValidation";
 import type { SecurityFinding } from "../../domain/securitySimulation";
@@ -21,10 +21,14 @@ type CanvasIssuePopover = {
 
 type ArchitectureCanvasPreviewProps = {
   architectureIssues: ArchitectureIssue[];
+  canvasNotification?: { id: number; message: string };
   configurationIssues: ConfigurationIssue[];
   scenario: Scenario;
   graph: ArchitectureGraph;
   isConnecting: boolean;
+  placementHint?: string;
+  placementZoneIds?: string[];
+  invalidPlacementZoneIds?: string[];
   canRedo: boolean;
   canUndo: boolean;
   canConnectNode: (nodeId: string) => boolean;
@@ -34,6 +38,7 @@ type ArchitectureCanvasPreviewProps = {
   validationIssueNodeIds?: string[];
   validationIssueZoneIds?: string[];
   selectedEdgeId?: ArchitectureEdgeId;
+  selectedRouteTableId?: ArchitectureRouteTableId;
   locatedNodeRequest?: { nodeId: string; requestId: number };
   selectedNodeId?: string;
   selectedNodeIds: string[];
@@ -56,8 +61,10 @@ type ArchitectureCanvasPreviewProps = {
   onRedo: () => void;
   onRunSimulation: () => void;
   onOpenCheck: (tab: CanvasCheckTab, findingId: string) => void;
+  onInspectZoneService: (zoneId: ArchitectureZoneId) => void;
   onSelectEdge: (edgeId: ArchitectureEdgeId) => void;
   onSelectNodes: (nodeIds: string[]) => void;
+  onSelectRouteTable: (routeTableId: ArchitectureRouteTableId) => void;
   onSelectNode: (nodeId: string) => void;
   onToggleNodeSelection: (nodeId: string) => void;
   onUndo: () => void;
@@ -87,19 +94,16 @@ const workspaceSize = {
   height: 140,
 };
 
-const squareNodeServiceIds = new Set([
-  "aws-ec2",
-  "aws-lambda",
-  "aws-efs",
-  "aws-s3",
-]);
-
 export function ArchitectureCanvasPreview({
   architectureIssues,
+  canvasNotification,
   configurationIssues,
   scenario,
   graph,
   isConnecting,
+  placementHint,
+  placementZoneIds = [],
+  invalidPlacementZoneIds = [],
   canRedo,
   canUndo,
   canConnectNode,
@@ -109,6 +113,7 @@ export function ArchitectureCanvasPreview({
   validationIssueNodeIds = [],
   validationIssueZoneIds = [],
   selectedEdgeId,
+  selectedRouteTableId,
   locatedNodeRequest,
   selectedNodeId,
   selectedNodeIds,
@@ -131,8 +136,10 @@ export function ArchitectureCanvasPreview({
   onRedo,
   onRunSimulation,
   onOpenCheck,
+  onInspectZoneService,
   onSelectEdge,
   onSelectNodes,
+  onSelectRouteTable,
   onSelectNode,
   onToggleNodeSelection,
   onUndo,
@@ -147,6 +154,11 @@ export function ArchitectureCanvasPreview({
   const hasNodeSelection = selectedNodeIds.length > 0;
   const hasSingleNodeSelection = selectedNodeIds.length === 1;
   const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const routeTableBySubnetId = new Map(
+    (graph.routeTables ?? []).flatMap((routeTable) =>
+      routeTable.associatedSubnetIds.map((subnetId) => [subnetId, routeTable] as const),
+    ),
+  );
   const edgeSimulationById = new Map(simulation.edges.map((edge) => [edge.edgeId, edge]));
   const nodeSimulationById = new Map(simulation.nodes.map((node) => [node.nodeId, node]));
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -198,10 +210,6 @@ export function ArchitectureCanvasPreview({
 
       securityFindingsByNode.set(finding.nodeId, [...(securityFindingsByNode.get(finding.nodeId) ?? []), finding]);
     });
-
-  function isSquareNodeService(serviceId: string) {
-    return squareNodeServiceIds.has(serviceId) || serviceId.includes("gateway");
-  }
 
   function getWorkspaceMetrics(rect: DOMRect) {
     const workspaceWidth = rect.width * (workspaceSize.width / 100);
@@ -288,6 +296,34 @@ export function ArchitectureCanvasPreview({
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
         event.preventDefault();
         onSelectNodes(graph.nodes.map((node) => node.id));
+      }
+
+      if (!event.ctrlKey && !event.metaKey) {
+        const key = event.key.toLowerCase();
+
+        if (key === "w" || event.key === "ArrowUp") {
+          event.preventDefault();
+          nudgeCanvas("up");
+          return;
+        }
+
+        if (key === "a" || event.key === "ArrowLeft") {
+          event.preventDefault();
+          nudgeCanvas("left");
+          return;
+        }
+
+        if (key === "s" || event.key === "ArrowDown") {
+          event.preventDefault();
+          nudgeCanvas("down");
+          return;
+        }
+
+        if (key === "d" || event.key === "ArrowRight") {
+          event.preventDefault();
+          nudgeCanvas("right");
+          return;
+        }
       }
 
       if (event.key.toLowerCase() === "r") {
@@ -849,6 +885,9 @@ export function ArchitectureCanvasPreview({
         role="presentation"
       >
         {fileMessage ? <p aria-live="polite" className="canvas-preview__file-message">{fileMessage}</p> : null}
+        {canvasNotification ? (
+          <p aria-live="polite" className="canvas-preview__toast" key={canvasNotification.id}>{canvasNotification.message}</p>
+        ) : null}
         <button
           aria-label="Pan canvas up"
           className="canvas-pan-button canvas-pan-button--top"
@@ -894,11 +933,14 @@ export function ArchitectureCanvasPreview({
               const zoneArchitectureIssues = architectureIssuesByZone.get(zone.id) ?? [];
               const zoneConfigurationIssues = configurationIssuesByZone.get(zone.id) ?? [];
               const hasZoneIssue = validationIssueZoneIds.includes(zone.id);
+              const isPlacementEligible = placementZoneIds.includes(zone.id);
+              const isPlacementInvalid = invalidPlacementZoneIds.includes(zone.id);
               const isZonePopoverOpen = activeIssuePopover?.targetType === "zone" && activeIssuePopover.targetId === zone.id;
+              const routeTable = zone.kind === "subnet" ? routeTableBySubnetId.get(zone.id) : undefined;
 
               return (
                 <div
-                  className={`${zoneClassNames[zone.kind] ?? "zone zone--subnet"} ${zone.kind === "subnet" ? `zone--subnet-${zone.config?.subnetAccess ?? "private"}` : ""} ${selectedZoneId === zone.id ? "zone--selected" : ""} ${hasZoneIssue ? "zone--issue" : ""}`}
+                  className={`${zoneClassNames[zone.kind] ?? "zone zone--subnet"} ${zone.kind === "subnet" ? `zone--subnet-${zone.config?.subnetAccess ?? "private"}` : ""} ${selectedZoneId === zone.id ? "zone--selected" : ""} ${hasZoneIssue ? "zone--issue" : ""} ${isPlacementEligible ? "zone--placement-valid" : ""} ${isPlacementInvalid ? "zone--placement-invalid" : ""}`}
                   key={zone.id}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -919,10 +961,45 @@ export function ArchitectureCanvasPreview({
                     zIndex: zone.layerOrder ?? 1,
                   } : undefined}
                 >
-                  {zone.kind === "subnet" && zone.config?.subnetAccess === "private" ? (
-                    <span className="zone__corner-badge zone__corner-badge--private" title="Private subnet">
-                      <Lock size={12} aria-hidden="true" />
-                    </span>
+                  {zone.kind === "vpc" || zone.kind === "subnet" ? (
+                    <button
+                      aria-label={`Open ${zone.label} service details`}
+                      className={`zone__service-badge ${zone.kind === "subnet" ? `zone__service-badge--${zone.config?.subnetAccess ?? "private"}` : ""}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectZone(zone.id);
+                        onInspectZoneService(zone.id);
+                      }}
+                      title={`Open ${zone.label} service details`}
+                      type="button"
+                    >
+                      <AwsServiceIcon
+                        label={zone.label}
+                        serviceId={
+                          zone.kind === "vpc"
+                            ? "aws-vpc"
+                            : zone.config?.subnetAccess === "public"
+                              ? "aws-public-subnet"
+                              : "aws-private-subnet"
+                        }
+                        size="sm"
+                      />
+                    </button>
+                  ) : null}
+                  {routeTable ? (
+                    <button
+                      aria-label={`Open ${routeTable.label} route table`}
+                      className={`zone__route-table-badge ${selectedRouteTableId === routeTable.id ? "zone__route-table-badge--selected" : ""}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectRouteTable(routeTable.id);
+                      }}
+                      title={`Inspect route table ${routeTable.label}`}
+                      type="button"
+                    >
+                      <Route size={15} aria-hidden="true" />
+                      <span>{routeTable.label}</span>
+                    </button>
                   ) : null}
                   <div className="zone__issue-stack">
                     {zoneArchitectureIssues.length > 0 ? (
@@ -957,6 +1034,7 @@ export function ArchitectureCanvasPreview({
                     ) : null}
                   </div>
                   <span className="zone__label">{zone.label}</span>
+                  {isPlacementEligible ? <span className="zone__placement-label">Allowed</span> : null}
                   {zone.config?.cidrBlock || zone.config?.regionCode || zone.config?.availabilityZoneName ? (
                     <span className="zone__detail">{zone.config.cidrBlock ?? zone.config.regionCode ?? zone.config.availabilityZoneName}</span>
                   ) : null}
@@ -1124,7 +1202,6 @@ export function ArchitectureCanvasPreview({
           (() => {
             const nodeSimulation = nodeSimulationById.get(node.id);
             const isSelected = selectedNodeIds.includes(node.id);
-            const isSquareNode = isSquareNodeService(node.serviceId);
             const hasValidationIssue = validationIssueNodeIds.includes(node.id);
             const nodeArchitectureIssues = architectureIssuesByNode.get(node.id) ?? [];
             const nodeConfigurationIssues = configurationIssuesByNode.get(node.id) ?? [];
@@ -1143,7 +1220,7 @@ export function ArchitectureCanvasPreview({
 
             return (
           <div
-            className={`canvas-node ${isSquareNode ? "canvas-node--square" : ""} ${nodeSimulation ? `canvas-node--${nodeSimulation.status}` : ""} ${hasValidationIssue ? "canvas-node--issue" : ""} ${isSelected ? "canvas-node--selected" : ""} ${isConnecting && selectedNodeId !== node.id ? "canvas-node--connect-target" : ""} ${isConnecting && selectedNodeId !== node.id && !canConnectNode(node.id) ? "canvas-node--connect-disabled" : ""}`}
+            className={`canvas-node ${nodeSimulation ? `canvas-node--${nodeSimulation.status}` : ""} ${hasValidationIssue ? "canvas-node--issue" : ""} ${isSelected ? "canvas-node--selected" : ""} ${isConnecting && selectedNodeId !== node.id ? "canvas-node--connect-target" : ""} ${isConnecting && selectedNodeId !== node.id && !canConnectNode(node.id) ? "canvas-node--connect-disabled" : ""}`}
             key={node.id}
             onClick={(event) => {
               event.stopPropagation();
@@ -1243,39 +1320,17 @@ export function ArchitectureCanvasPreview({
             >
               <Link2 size={10} aria-hidden="true" />
             </button>
-            <AwsServiceIcon label={node.label} serviceId={node.serviceId} size="sm" />
-            <span className="canvas-node__content">
-              <span className="canvas-node__label">{node.label}</span>
-              {node.serviceId === "aws-alb" && node.config.trafficSharePercent ? (
-                <span className="canvas-node__meta">
-                  {Number.isInteger(node.config.trafficSharePercent)
-                    ? `${node.config.trafficSharePercent}% traffic`
-                    : `${node.config.trafficSharePercent.toFixed(1)}% traffic`}
-                </span>
-              ) : null}
-              {node.serviceId === "aws-alb" && (node.config.targetGroupCount || node.config.targetsPerGroup) ? (
-                <span className="canvas-node__elb-mode">
-                  <span className="canvas-node__elb-visual" aria-hidden="true">
-                    {Array.from({
-                      length: Math.max(1, Math.min(node.config.targetGroupCount ?? 1, 4)),
-                    }).map((_, index) => (
-                      <span className="canvas-node__elb-group" key={`${node.id}-tg-${index}`} />
-                    ))}
-                  </span>
-                  <span className="canvas-node__meta">
-                    {node.config.targetGroupCount ?? 1} TG
-                    {node.config.targetGroupCount === 1 ? "" : "s"}
-                    {" - "}
-                    {(node.config.targetGroupCount ?? 1) * (node.config.targetsPerGroup ?? 0)} targets
-                  </span>
+            <span className="canvas-node__symbol">
+              <AwsServiceIcon label={node.label} serviceId={node.serviceId} size="lg" />
+              {nodeSimulation?.instanceCount ? (
+                <span className="canvas-node__runtime" title={nodeSimulation.reason}>
+                  {nodeSimulation.instanceCount}
                 </span>
               ) : null}
             </span>
-            {nodeSimulation?.instanceCount ? (
-              <span className="canvas-node__runtime" title={nodeSimulation.reason}>
-                {nodeSimulation.instanceCount}
-              </span>
-            ) : null}
+            <span className="canvas-node__content">
+              <span className="canvas-node__label">{node.label}</span>
+            </span>
             {(nodeArchitectureIssues.length > 0 || nodeConfigurationIssues.length > 0 || nodeSecurityFindings.length > 0) ? (
               <div className="canvas-node__issue-stack">
                 {nodeArchitectureIssues.length > 0 ? (
@@ -1409,7 +1464,9 @@ export function ArchitectureCanvasPreview({
             : selectedNodeIds.length > 1
               ? `${selectedNodeIds.length} services selected. Delete, move, or drag them together.`
             : selectedNode
-              ? `Selected: ${selectedNode.label}. Click a side link handle or press C, then click a target service.`
+              ? placementHint
+                ? `Selected: ${selectedNode.label}. ${placementHint}`
+                : `Selected: ${selectedNode.label}. Click a side link handle or press C, then click a target service.`
               : "Click a service, then use its side link handle to connect it to another service."}
         </span>
       </div>
@@ -1425,6 +1482,8 @@ export function ArchitectureCanvasPreview({
         <span className="flow-legend__item">`Ctrl/Cmd+V` paste</span>
         <span className="flow-legend__item">`Ctrl/Cmd+Z` undo</span>
         <span className="flow-legend__item">`Ctrl/Cmd+Y` redo</span>
+        <span className="flow-legend__item">`W/A/S/D` pan canvas</span>
+        <span className="flow-legend__item">`Arrow keys` pan canvas</span>
         <span className="flow-legend__item">`Tab+Scroll` zoom</span>
         <span className="flow-legend__item">`Delete` remove</span>
         <span className="flow-legend__item">`R` run</span>

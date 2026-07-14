@@ -20,6 +20,13 @@ function formatTrafficSharePercent(value: number) {
   return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
 }
 
+function servicesAreLinked(sourceService: CloudService, targetService: CloudService) {
+  return (
+    sourceService.allowedConnections.includes(targetService.id) ||
+    targetService.allowedConnections.includes(sourceService.id)
+  );
+}
+
 export function canServicesConnect(
   sourceService: CloudService | undefined,
   targetService: CloudService | undefined,
@@ -38,7 +45,7 @@ export function canServicesConnect(
     };
   }
 
-  if (sourceService.allowedConnections.includes(targetService.id)) {
+  if (servicesAreLinked(sourceService, targetService)) {
     return { allowed: true };
   }
 
@@ -48,8 +55,23 @@ export function canServicesConnect(
   };
 }
 
-export function getConnectableServiceIds(sourceService: CloudService | undefined): string[] {
-  return sourceService?.allowedConnections ?? [];
+export function getConnectableServiceIds(
+  sourceService: CloudService | undefined,
+  servicesById?: Map<string, CloudService>,
+): string[] {
+  if (!sourceService) {
+    return [];
+  }
+
+  const connectableIds = new Set(sourceService.allowedConnections);
+
+  servicesById?.forEach((service) => {
+    if (service.id !== sourceService.id && service.allowedConnections.includes(sourceService.id)) {
+      connectableIds.add(service.id);
+    }
+  });
+
+  return [...connectableIds];
 }
 
 export function inferConnectionBlueprint(
@@ -128,6 +150,50 @@ export function inferConnectionBlueprint(
       kind: "observe",
       label: "DB metrics",
       direction: "one-way",
+    };
+  }
+
+  if (
+    (sourceId === "aws-internet-gateway" && targetId === "aws-ec2") ||
+    (sourceId === "aws-ec2" && targetId === "aws-internet-gateway")
+  ) {
+    return {
+      kind: "request",
+      label: "Public route",
+      direction: "two-way",
+    };
+  }
+
+  if (
+    (sourceId === "aws-internet-gateway" && targetId === "aws-nat-gateway") ||
+    (sourceId === "aws-nat-gateway" && targetId === "aws-internet-gateway")
+  ) {
+    return {
+      kind: "request",
+      label: "Internet egress",
+      direction: "two-way",
+    };
+  }
+
+  if (
+    (sourceId === "aws-nat-gateway" && targetId === "aws-ec2") ||
+    (sourceId === "aws-ec2" && targetId === "aws-nat-gateway")
+  ) {
+    return {
+      kind: "request",
+      label: "Outbound path",
+      direction: "two-way",
+    };
+  }
+
+  if (
+    (sourceId === "aws-internet-gateway" && targetId === "aws-alb") ||
+    (sourceId === "aws-alb" && targetId === "aws-internet-gateway")
+  ) {
+    return {
+      kind: "request",
+      label: "Ingress + egress",
+      direction: "two-way",
     };
   }
 

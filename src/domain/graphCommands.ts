@@ -5,6 +5,8 @@ import type {
   ArchitectureGraph,
   ArchitectureNode,
   ArchitectureNodeConfig,
+  ArchitectureRouteTable,
+  ArchitectureRouteTableId,
   ArchitectureNodeId,
   ArchitectureZone,
   ArchitectureZoneId,
@@ -44,6 +46,15 @@ export type AddZoneInput = {
   layout?: ArchitectureZone["layout"];
 };
 
+export type AddRouteTableInput = {
+  id?: ArchitectureRouteTableId;
+  provider: ArchitectureGraph["provider"];
+  label: string;
+  vpcId?: ArchitectureZoneId;
+  associatedSubnetIds: ArchitectureZoneId[];
+  routes: ArchitectureRouteTable["routes"];
+};
+
 function createNodeId(graph: ArchitectureGraph): ArchitectureNodeId {
   return `node-${graph.nodes.length + 1}`;
 }
@@ -54,6 +65,10 @@ function createEdgeId(graph: ArchitectureGraph): ArchitectureEdgeId {
 
 function createZoneId(graph: ArchitectureGraph, kind: ArchitectureZone["kind"]): ArchitectureZoneId {
   return `${kind}-${graph.zones.length + 1}`;
+}
+
+function createRouteTableId(graph: ArchitectureGraph): ArchitectureRouteTableId {
+  return `route-table-${(graph.routeTables ?? []).length + 1}`;
 }
 
 function getNextZoneLayerOrder(graph: ArchitectureGraph) {
@@ -131,6 +146,58 @@ export function addZone(graph: ArchitectureGraph, input: AddZoneInput): Architec
   return { ...graph, zones: [...graph.zones, nextZone] };
 }
 
+export function addRouteTable(graph: ArchitectureGraph, input: AddRouteTableInput): ArchitectureGraph {
+  const routeTables = graph.routeTables ?? [];
+  const nextId = input.id ?? createRouteTableId(graph);
+
+  if (routeTables.some((routeTable) => routeTable.id === nextId)) {
+    return graph;
+  }
+
+  const validSubnetIds = input.associatedSubnetIds.filter((subnetId) => hasZone(graph, subnetId));
+
+  if (validSubnetIds.length !== input.associatedSubnetIds.length || (input.vpcId && !hasZone(graph, input.vpcId))) {
+    return graph;
+  }
+
+  const nextRouteTable: ArchitectureRouteTable = {
+    id: nextId,
+    provider: input.provider,
+    label: input.label,
+    vpcId: input.vpcId,
+    associatedSubnetIds: validSubnetIds,
+    routes: input.routes,
+  };
+
+  return {
+    ...graph,
+    routeTables: [...routeTables, nextRouteTable],
+  };
+}
+
+export function updateRouteTable(
+  graph: ArchitectureGraph,
+  routeTableId: ArchitectureRouteTableId,
+  changes: Partial<Pick<ArchitectureRouteTable, "label" | "vpcId" | "associatedSubnetIds" | "routes">>,
+): ArchitectureGraph {
+  const routeTables = graph.routeTables ?? [];
+
+  if (changes.vpcId && !hasZone(graph, changes.vpcId)) {
+    return graph;
+  }
+
+  if (changes.associatedSubnetIds?.some((subnetId) => !hasZone(graph, subnetId))) {
+    return graph;
+  }
+
+  return {
+    ...graph,
+    routeTables: routeTables.map((routeTable) =>
+      routeTable.id === routeTableId ? { ...routeTable, ...changes } : routeTable,
+    ),
+  };
+}
+
 export function updateZone(
   graph: ArchitectureGraph,
   zoneId: ArchitectureZoneId,
@@ -202,6 +269,13 @@ export function removeZone(graph: ArchitectureGraph, zoneId: ArchitectureZoneId)
   return {
     ...graph,
     zones: graph.zones.filter((zone) => !ids.has(zone.id)),
+    routeTables: (graph.routeTables ?? [])
+      .map((routeTable) => ({
+        ...routeTable,
+        associatedSubnetIds: routeTable.associatedSubnetIds.filter((subnetId) => !ids.has(subnetId)),
+      }))
+      .filter((routeTable) => !routeTable.vpcId || !ids.has(routeTable.vpcId))
+      .filter((routeTable) => routeTable.associatedSubnetIds.length > 0),
     nodes: graph.nodes.map((node) => ids.has(node.zoneId ?? "") ? { ...node, zoneId: undefined } : node),
   };
 }
@@ -403,6 +477,13 @@ export function selectZone(state: LearnerScenarioState, zoneId?: ArchitectureZon
   return {
     ...state,
     selection: zoneId ? { zoneId } : {},
+  };
+}
+
+export function selectRouteTable(state: LearnerScenarioState, routeTableId?: ArchitectureRouteTableId): LearnerScenarioState {
+  return {
+    ...state,
+    selection: routeTableId ? { routeTableId } : {},
   };
 }
 

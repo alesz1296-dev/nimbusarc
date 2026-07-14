@@ -2,6 +2,7 @@ import type { Scenario } from "./types";
 import type {
   ArchitectureGraph,
   ArchitectureNode,
+  ArchitectureRouteTable,
   ArchitectureZone,
   LearnerScenarioState,
 } from "./graph";
@@ -181,11 +182,59 @@ const awsBaseZones: ArchitectureZone[] = [
   },
 ];
 
+const awsBaseRouteTables: ArchitectureRouteTable[] = [
+  {
+    id: "rtb-public-a",
+    provider: "aws",
+    label: "public-a",
+    vpcId: "aws-vpc-primary",
+    associatedSubnetIds: ["aws-public-subnet-a"],
+    routes: [
+      { id: "rtb-public-a-local", destination: "10.0.0.0/16", targetType: "local", status: "active", learningNote: "Local VPC route is created automatically." },
+      { id: "rtb-public-a-default", destination: "0.0.0.0/0", targetType: "internet-gateway", status: "active", learningNote: "Public subnets become public through a default route to an Internet Gateway." },
+    ],
+  },
+  {
+    id: "rtb-public-b",
+    provider: "aws",
+    label: "public-b",
+    vpcId: "aws-vpc-primary",
+    associatedSubnetIds: ["aws-public-subnet-b"],
+    routes: [
+      { id: "rtb-public-b-local", destination: "10.0.0.0/16", targetType: "local", status: "active", learningNote: "Local VPC route is created automatically." },
+      { id: "rtb-public-b-default", destination: "0.0.0.0/0", targetType: "internet-gateway", status: "active", learningNote: "Public subnets become public through a default route to an Internet Gateway." },
+    ],
+  },
+  {
+    id: "rtb-private-a",
+    provider: "aws",
+    label: "private-a",
+    vpcId: "aws-vpc-primary",
+    associatedSubnetIds: ["aws-private-subnet-a"],
+    routes: [
+      { id: "rtb-private-a-local", destination: "10.0.0.0/16", targetType: "local", status: "active", learningNote: "Local VPC route is created automatically." },
+      { id: "rtb-private-a-default", destination: "0.0.0.0/0", targetType: "nat-gateway", status: "active", learningNote: "Private subnet outbound internet access usually routes through NAT." },
+    ],
+  },
+  {
+    id: "rtb-private-b",
+    provider: "aws",
+    label: "private-b",
+    vpcId: "aws-vpc-primary",
+    associatedSubnetIds: ["aws-private-subnet-b"],
+    routes: [
+      { id: "rtb-private-b-local", destination: "10.0.0.0/16", targetType: "local", status: "active", learningNote: "Local VPC route is created automatically." },
+      { id: "rtb-private-b-default", destination: "0.0.0.0/0", targetType: "nat-gateway", status: "active", learningNote: "Private subnet outbound internet access usually routes through NAT." },
+    ],
+  },
+];
+
 export function createEmptyArchitectureGraph(scenario: Scenario): ArchitectureGraph {
   return {
     provider: scenario.provider,
     scenarioId: scenario.id,
     zones: scenario.provider === "aws" ? awsBaseZones : [],
+    routeTables: scenario.provider === "aws" ? awsBaseRouteTables : [],
     nodes: [],
     edges: [],
   };

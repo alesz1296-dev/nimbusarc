@@ -62,11 +62,25 @@ function firstInvalidZone(graph: ArchitectureGraph, zoneId?: string) {
   });
 }
 
-function routeBlocksZone(zone?: ArchitectureZone) {
+function routeBlocksZone(graph: ArchitectureGraph, zone?: ArchitectureZone) {
   if (!zone?.config) return undefined;
   if (zone.config.networkAclMode === "deny") return `Network ACL denies traffic in ${zone.label}`;
-  if (zone.kind === "subnet" && zone.config.routeTarget === "local-only" && zone.config.subnetAccess === "public") {
-    return `${zone.label} is marked public but its route table has no internet path`;
+  if (zone.kind === "subnet") {
+    const routeTable = (graph.routeTables ?? []).find((candidate) => candidate.associatedSubnetIds.includes(zone.id));
+    const defaultRoute = routeTable?.routes.find((route) => route.destination === "0.0.0.0/0" || route.destination === "::/0");
+    const defaultTarget = defaultRoute?.targetType ?? zone.config.routeTarget;
+
+    if (defaultRoute?.status === "blackhole" || defaultRoute?.status === "invalid") {
+      return `${zone.label} has an unhealthy default route`;
+    }
+
+    if (zone.config.subnetAccess === "public" && defaultTarget !== "internet-gateway") {
+      return `${zone.label} is marked public but its route table has no internet path`;
+    }
+
+    if (zone.config.subnetAccess === "private" && defaultTarget === "internet-gateway") {
+      return `${zone.label} is private but routes directly to an Internet Gateway`;
+    }
   }
   return undefined;
 }
@@ -131,8 +145,8 @@ function isBlockedBy(edge: ArchitectureEdge, graph: ArchitectureGraph) {
   const sourceZoneChain = findZoneChain(graph, source?.zoneId);
   const targetZoneChain = findZoneChain(graph, target?.zoneId);
   const routeBlock =
-    sourceZoneChain.map(routeBlocksZone).find(Boolean) ??
-    targetZoneChain.map(routeBlocksZone).find(Boolean);
+    sourceZoneChain.map((zone) => routeBlocksZone(graph, zone)).find(Boolean) ??
+    targetZoneChain.map((zone) => routeBlocksZone(graph, zone)).find(Boolean);
 
   if (routeBlock) {
     return routeBlock;

@@ -3,6 +3,7 @@ import type { CloudProvider, Scenario } from "./types";
 export type ArchitectureNodeId = string;
 export type ArchitectureEdgeId = string;
 export type ArchitectureZoneId = string;
+export type ArchitectureRouteTableId = string;
 
 export type CanvasPoint = {
   x: number;
@@ -47,6 +48,33 @@ export type ArchitectureZone = {
     routePropagation?: boolean;
     networkAclMode?: "allow" | "deny";
   };
+};
+
+export type ArchitectureRouteTargetType =
+  | "local"
+  | "internet-gateway"
+  | "nat-gateway"
+  | "egress-only-igw"
+  | "transit-gateway"
+  | "vpn-gateway"
+  | "vpc-endpoint";
+
+export type ArchitectureRoute = {
+  id: string;
+  destination: string;
+  targetType: ArchitectureRouteTargetType;
+  targetId?: string;
+  status?: "active" | "blackhole" | "invalid";
+  learningNote?: string;
+};
+
+export type ArchitectureRouteTable = {
+  id: ArchitectureRouteTableId;
+  provider: CloudProvider;
+  label: string;
+  vpcId?: ArchitectureZoneId;
+  associatedSubnetIds: ArchitectureZoneId[];
+  routes: ArchitectureRoute[];
 };
 
 export type ArchitectureNodeConfig = {
@@ -154,6 +182,7 @@ export type ArchitectureGraph = {
   provider: CloudProvider;
   scenarioId?: string;
   zones: ArchitectureZone[];
+  routeTables?: ArchitectureRouteTable[];
   nodes: ArchitectureNode[];
   edges: ArchitectureEdge[];
 };
@@ -163,6 +192,7 @@ export type GraphSelection = {
   nodeIds?: ArchitectureNodeId[];
   edgeId?: ArchitectureEdgeId;
   zoneId?: ArchitectureZoneId;
+  routeTableId?: ArchitectureRouteTableId;
 };
 
 export type ScenarioSubmissionStatus = "idle" | "editing" | "submitted" | "reviewed";

@@ -1,4 +1,5 @@
 import type { ArchitectureGraph, ArchitectureNode, ArchitectureZone } from "./graph";
+import { canPlaceServiceInZone, getPlacementIssue } from "./placementRules";
 import type { CloudService } from "./types";
 
 export type ArchitectureIssueSeverity = "error" | "warning";
@@ -107,13 +108,15 @@ export function assessArchitectureValidation(graph: ArchitectureGraph, servicesB
     const serviceName = servicesById.get(node.serviceId)?.name ?? node.label;
     const zoneKind = nodeZoneKind(graph, node);
 
-    if (node.serviceId === "aws-internet-gateway" && zoneKind !== "vpc") {
+    const placementIssue = getPlacementIssue(node.serviceId);
+
+    if (placementIssue && !canPlaceServiceInZone(graph, node.serviceId, node.zoneId)) {
       addIssue(issues, {
-        id: `${node.id}-igw-placement`,
-        severity: "warning",
-        title: `${serviceName} placement looks wrong`,
-        detail: "An Internet Gateway attaches to a VPC and should be modeled at the VPC boundary, not inside a subnet, AZ, or edge lane.",
-        recommendation: "Move the Internet Gateway into the VPC layer and connect public subnet routes to it.",
+        id: `${node.id}-placement`,
+        severity: placementIssue.severity,
+        title: `${serviceName} placement is invalid`,
+        detail: placementIssue.detail,
+        recommendation: placementIssue.recommendation,
         nodeId: node.id,
       });
     }
@@ -197,17 +200,6 @@ export function assessArchitectureValidation(graph: ArchitectureGraph, servicesB
       }
     }
 
-    if (node.serviceId === "aws-nat-gateway" && !isInPublicSubnet(graph, node)) {
-      addIssue(issues, {
-        id: `${node.id}-nat-public-subnet`,
-        severity: "error",
-        title: `${serviceName} must be in a public subnet`,
-        detail: "A NAT Gateway sits in a public subnet and provides outbound internet access for private subnets.",
-        recommendation: "Move NAT Gateway to a public subnet and route private subnet egress through it.",
-        nodeId: node.id,
-      });
-    }
-
     if (node.serviceId === "aws-ec2" && node.config.publicAccess && !isInPublicSubnet(graph, node)) {
       addIssue(issues, {
         id: `${node.id}-ec2-public-access-placement`,
@@ -219,14 +211,23 @@ export function assessArchitectureValidation(graph: ArchitectureGraph, servicesB
       });
     }
 
-    if (node.serviceId === "aws-vpc" && !isInsideZoneKind(graph, node, "region")) {
+  });
+
+  graph.zones.forEach((zone) => {
+    if (zone.kind !== "vpc") {
+      return;
+    }
+
+    const parentZone = zone.parentZoneId ? graph.zones.find((candidate) => candidate.id === zone.parentZoneId) : undefined;
+
+    if (parentZone?.kind !== "region") {
       addIssue(issues, {
-        id: `${node.id}-vpc-region-placement`,
+        id: `${zone.id}-vpc-region-placement`,
         severity: "warning",
-        title: `${serviceName} should sit inside a Region`,
+        title: `${zone.label} should sit inside a Region`,
         detail: "A VPC is regional. Modeling it outside a Region makes AZ and subnet checks harder to reason about.",
         recommendation: "Place the VPC inside the AWS Region layer.",
-        nodeId: node.id,
+        zoneId: zone.id,
       });
     }
   });

@@ -1,4 +1,4 @@
-import type { ArchitectureGraph, ArchitectureZone } from "./graph";
+import type { ArchitectureGraph, ArchitectureNode, ArchitectureRoute, ArchitectureRouteTable, ArchitectureZone } from "./graph";
 
 export type ConfigurationIssueSeverity = "error" | "warning";
 
@@ -37,6 +37,123 @@ function isValidIpv6Cidr(value?: string) {
 
 function addIssue(issues: ConfigurationIssue[], issue: ConfigurationIssue) {
   issues.push(issue);
+}
+
+function findRouteTableForSubnet(graph: ArchitectureGraph, subnetId: string): ArchitectureRouteTable | undefined {
+  return (graph.routeTables ?? []).find((routeTable) => routeTable.associatedSubnetIds.includes(subnetId));
+}
+
+type ZoneRouteTarget = NonNullable<ArchitectureZone["config"]>["routeTarget"];
+
+function getDefaultRouteTarget(routeTable?: ArchitectureRouteTable, fallbackTarget?: ZoneRouteTarget) {
+  const defaultRoute = routeTable?.routes.find((route) => route.destination === "0.0.0.0/0" || route.destination === "::/0");
+  return defaultRoute?.targetType ?? fallbackTarget;
+}
+
+function getDefaultRoute(routeTable?: ArchitectureRouteTable) {
+  return routeTable?.routes.find((route) => route.destination === "0.0.0.0/0" || route.destination === "::/0");
+}
+
+const routeTargetServiceMap: Partial<Record<ArchitectureRoute["targetType"], string[]>> = {
+  "internet-gateway": ["aws-internet-gateway"],
+  "nat-gateway": ["aws-nat-gateway"],
+  "transit-gateway": ["aws-transit-gateway"],
+  "vpn-gateway": ["aws-vpn-gateway"],
+  "vpc-endpoint": ["aws-vpc-endpoint"],
+};
+
+function findZone(graph: ArchitectureGraph, zoneId?: string) {
+  return zoneId ? graph.zones.find((zone) => zone.id === zoneId) : undefined;
+}
+
+function getZoneAncestry(graph: ArchitectureGraph, zoneId?: string) {
+  const ancestry: ArchitectureZone[] = [];
+  let cursor = findZone(graph, zoneId);
+
+  while (cursor) {
+    ancestry.push(cursor);
+    cursor = findZone(graph, cursor.parentZoneId);
+  }
+
+  return ancestry;
+}
+
+function nodeIsInZoneKind(graph: ArchitectureGraph, node: ArchitectureNode, kind: ArchitectureZone["kind"]) {
+  return getZoneAncestry(graph, node.zoneId).some((zone) => zone.kind === kind);
+}
+
+function nodeIsInSubnetAccess(graph: ArchitectureGraph, node: ArchitectureNode, subnetAccess: "public" | "private") {
+  return getZoneAncestry(graph, node.zoneId).some((zone) => zone.kind === "subnet" && zone.config?.subnetAccess === subnetAccess);
+}
+
+function validateRouteTarget(issues: ConfigurationIssue[], graph: ArchitectureGraph, zone: ArchitectureZone, routeTable: ArchitectureRouteTable, route: ArchitectureRoute) {
+  if (route.targetType === "local") {
+    return;
+  }
+
+  const expectedServiceIds = routeTargetServiceMap[route.targetType] ?? [];
+
+  if (!route.targetId) {
+    addIssue(issues, {
+      id: `${zone.id}-${route.id}-missing-target-resource`,
+      severity: "warning",
+      title: `${zone.label} route target is not selected`,
+      detail: `${routeTable.label} has a ${route.destination} route to ${route.targetType}, but it does not point to a placed gateway resource.`,
+      recommendation: "Open the route table and choose the actual placed gateway node as the target resource.",
+      zoneId: zone.id,
+    });
+    return;
+  }
+
+  const targetNode = graph.nodes.find((node) => node.id === route.targetId);
+
+  if (!targetNode) {
+    addIssue(issues, {
+      id: `${zone.id}-${route.id}-target-not-found`,
+      severity: "error",
+      title: `${zone.label} route points to a missing resource`,
+      detail: `${routeTable.label} points ${route.destination} to ${route.targetId}, but that resource is not on the canvas.`,
+      recommendation: "Pick an existing gateway target from the route table inspector.",
+      zoneId: zone.id,
+    });
+    return;
+  }
+
+  if (expectedServiceIds.length > 0 && !expectedServiceIds.includes(targetNode.serviceId)) {
+    addIssue(issues, {
+      id: `${zone.id}-${route.id}-target-type-mismatch`,
+      severity: "error",
+      title: `${zone.label} route target type does not match`,
+      detail: `${routeTable.label} expects ${route.targetType}, but ${targetNode.label} is a different service type.`,
+      recommendation: "Choose a target resource that matches the selected route target type.",
+      zoneId: zone.id,
+      nodeId: targetNode.id,
+    });
+  }
+
+  if (route.targetType === "internet-gateway" && !nodeIsInZoneKind(graph, targetNode, "vpc")) {
+    addIssue(issues, {
+      id: `${zone.id}-${route.id}-igw-placement`,
+      severity: "error",
+      title: `${targetNode.label} should attach to the VPC boundary`,
+      detail: "Internet Gateways attach to a VPC, not to an individual subnet.",
+      recommendation: "Move the Internet Gateway onto the VPC scope.",
+      zoneId: zone.id,
+      nodeId: targetNode.id,
+    });
+  }
+
+  if (route.targetType === "nat-gateway" && !nodeIsInSubnetAccess(graph, targetNode, "public")) {
+    addIssue(issues, {
+      id: `${zone.id}-${route.id}-nat-placement`,
+      severity: "error",
+      title: `${targetNode.label} must be in a public subnet`,
+      detail: "NAT Gateway is used by private subnet route tables but the NAT Gateway itself must sit in a public subnet.",
+      recommendation: "Move the NAT Gateway into a public subnet with a route to an Internet Gateway.",
+      zoneId: zone.id,
+      nodeId: targetNode.id,
+    });
+  }
 }
 
 export function assessArchitectureConfiguration(graph: ArchitectureGraph): ConfigurationAssessment {
@@ -93,7 +210,11 @@ export function assessArchitectureConfiguration(graph: ArchitectureGraph): Confi
     }
 
     if (zone.kind === "subnet") {
-      if (!config.routeTableName?.trim()) {
+      const routeTable = findRouteTableForSubnet(graph, zone.id);
+      const defaultRoute = getDefaultRoute(routeTable);
+      const defaultRouteTarget = getDefaultRouteTarget(routeTable, config.routeTarget);
+
+      if (!routeTable && !config.routeTableName?.trim()) {
         addIssue(issues, {
           id: `${zone.id}-missing-route-table`,
           severity: "error",
@@ -104,7 +225,20 @@ export function assessArchitectureConfiguration(graph: ArchitectureGraph): Confi
         });
       }
 
-      if (config.subnetAccess === "public" && config.routeTarget !== "internet-gateway") {
+      if (routeTable?.routes.some((route) => route.status === "blackhole" || route.status === "invalid")) {
+        addIssue(issues, {
+          id: `${zone.id}-route-table-invalid-route`,
+          severity: "error",
+          title: `${zone.label} has an unhealthy route`,
+          detail: "One or more routes in the associated route table are marked blackhole or invalid.",
+          recommendation: "Open the route table and repair or remove invalid routes.",
+          zoneId: zone.id,
+        });
+      }
+
+      routeTable?.routes.forEach((route) => validateRouteTarget(issues, graph, zone, routeTable, route));
+
+      if (config.subnetAccess === "public" && defaultRouteTarget !== "internet-gateway") {
         addIssue(issues, {
           id: `${zone.id}-public-route`,
           severity: "warning",
@@ -115,7 +249,7 @@ export function assessArchitectureConfiguration(graph: ArchitectureGraph): Confi
         });
       }
 
-      if (config.subnetAccess === "private" && config.routeTarget === "internet-gateway") {
+      if (config.subnetAccess === "private" && defaultRouteTarget === "internet-gateway") {
         addIssue(issues, {
           id: `${zone.id}-private-route`,
           severity: "error",
@@ -124,6 +258,26 @@ export function assessArchitectureConfiguration(graph: ArchitectureGraph): Confi
           recommendation: "Use a NAT Gateway, VPC endpoint, transit path, or local-only routing.",
           zoneId: zone.id,
         });
+      }
+
+      if (config.subnetAccess === "private" && defaultRouteTarget === "nat-gateway") {
+        const targetNatNode = defaultRoute?.targetId
+          ? graph.nodes.find((node) => node.id === defaultRoute.targetId)
+          : undefined;
+        const hasNatInPublicSubnet = targetNatNode
+          ? nodeIsInSubnetAccess(graph, targetNatNode, "public")
+          : graph.nodes.some((node) => node.serviceId === "aws-nat-gateway" && nodeIsInSubnetAccess(graph, node, "public"));
+
+        if (!hasNatInPublicSubnet) {
+          addIssue(issues, {
+            id: `${zone.id}-nat-target-missing`,
+            severity: "warning",
+            title: `${zone.label} routes to NAT but no public NAT Gateway is modeled`,
+            detail: "Private subnet outbound internet paths need a NAT Gateway placed in a public subnet.",
+            recommendation: "Add a NAT Gateway to a public subnet, or change the route target to VPC Endpoint/local-only if the subnet is isolated.",
+            zoneId: zone.id,
+          });
+        }
       }
     }
   });

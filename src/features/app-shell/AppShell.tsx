@@ -10,8 +10,10 @@ import { simulateArchitectureGraph } from "../../domain/flowSimulation";
 import { createIdleSimulation } from "../../domain/flowSimulation";
 import { createPreviewLearnerScenarioState } from "../../domain/graphFactory";
 import { downloadArchitecture, loadSavedArchitecture, saveArchitecture } from "../../domain/architecturePersistence";
+import { canPlaceServiceInZone, getPlacementHint, getValidPlacementZoneIds, getZoneAnchorPosition, resolvePlacementZoneId } from "../../domain/placementRules";
 import {
   addNode,
+  addRouteTable,
   addZone,
   clearScenarioSelection,
   connectNodes,
@@ -24,16 +26,20 @@ import {
   selectEdge,
   selectNode,
   selectNodes,
+  selectRouteTable,
   toggleNodeSelection,
   updateEdge,
   updateNodeConfig,
   updateNodeLabel,
+  updateRouteTable,
   updateZone,
   updateScenarioGraph,
 } from "../../domain/graphCommands";
 import type {
   ArchitectureGraph,
   ArchitectureNodeId,
+  ArchitectureRouteTable,
+  ArchitectureRouteTableId,
   ArchitectureZoneId,
   CanvasPoint,
   LearnerScenarioState,
@@ -137,8 +143,26 @@ function getSuggestedZoneId(service: CloudService): ArchitectureZoneId {
 function getSuggestedNodePosition(
   graph: ArchitectureGraph,
   zoneId: ArchitectureZoneId,
+  serviceId?: string,
 ) {
+  const zone = graph.zones.find((entry) => entry.id === zoneId);
   const existingNodesInZone = graph.nodes.filter((node) => node.zoneId === zoneId).length;
+
+  if (zone?.layout && serviceId) {
+    const anchor = getZoneAnchorPosition(zone, serviceId);
+
+    if (anchor) {
+      const offsetIndex = existingNodesInZone % 4;
+      const offsetX = ((offsetIndex % 2) * 6) - 3;
+      const offsetY = (Math.floor(offsetIndex / 2) * 5) - 2.5;
+
+      return clampPosition({
+        x: anchor.x + offsetX,
+        y: anchor.y + offsetY,
+      });
+    }
+  }
+
   const x = zoneXSlots[existingNodesInZone % zoneXSlots.length];
   const yOffset = Math.floor(existingNodesInZone / zoneXSlots.length) * 8;
 
@@ -157,6 +181,49 @@ function getNewZoneLayout(graph: ArchitectureGraph, kind: "region" | "vpc" | "av
   return kind === "availability-zone"
     ? { x: column ? 51 : 9, y: 31 + row * 8, width: 40, height: 57 - row * 8 }
     : { x: column ? 53.5 : 11.5, y: 39 + row * 24, width: 35, height: 21 };
+}
+
+function findParentVpcId(graph: ArchitectureGraph, zoneId?: ArchitectureZoneId): ArchitectureZoneId | undefined {
+  let current = zoneId ? graph.zones.find((zone) => zone.id === zoneId) : undefined;
+
+  while (current) {
+    if (current.kind === "vpc") {
+      return current.id;
+    }
+
+    current = current.parentZoneId ? graph.zones.find((zone) => zone.id === current?.parentZoneId) : undefined;
+  }
+
+  return graph.zones.find((zone) => zone.kind === "vpc")?.id;
+}
+
+function createDefaultRoutesForSubnet(
+  graph: ArchitectureGraph,
+  subnetId: ArchitectureZoneId,
+  subnetAccess: "public" | "private",
+): ArchitectureRouteTable["routes"] {
+  const vpc = findParentVpcId(graph, subnetId);
+  const vpcZone = graph.zones.find((zone) => zone.id === vpc);
+  const localDestination = vpcZone?.config?.cidrIpv4 ?? vpcZone?.config?.cidrBlock ?? "10.0.0.0/16";
+
+  return [
+    {
+      id: `${subnetId}-route-local`,
+      destination: localDestination,
+      targetType: "local",
+      status: "active",
+      learningNote: "The local route keeps traffic inside the VPC CIDR.",
+    },
+    {
+      id: `${subnetId}-route-default`,
+      destination: "0.0.0.0/0",
+      targetType: subnetAccess === "public" ? "internet-gateway" : "nat-gateway",
+      status: "active",
+      learningNote: subnetAccess === "public"
+        ? "A public subnet needs a default route to an Internet Gateway."
+        : "A private subnet typically sends outbound internet traffic to a NAT Gateway.",
+    },
+  ];
 }
 
 type ZoneAddKind = "region" | "vpc" | "availability-zone" | "subnet-public" | "subnet-private";
@@ -195,6 +262,23 @@ function getNextAvailableLabel(existingLabels: string[], sourceLabel: string) {
   return `${baseName}_${nextIndex}`;
 }
 
+function getNextServiceLabel(existingLabels: string[], serviceName: string) {
+  const { baseName } = parseNameParts(serviceName);
+  let highestIndex = 0;
+
+  existingLabels.forEach((label) => {
+    const parsed = parseNameParts(label);
+
+    if (parsed.baseName !== baseName) {
+      return;
+    }
+
+    highestIndex = Math.max(highestIndex, parsed.currentIndex || 1);
+  });
+
+  return `${baseName}_${highestIndex + 1}`;
+}
+
 export function AppShell() {
   const activeProvider = providerRegistry.find((provider) => provider.enabled);
   const servicesById = new Map(services.map((service) => [service.id, service]));
@@ -212,6 +296,7 @@ export function AppShell() {
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [isInspectorVisible, setIsInspectorVisible] = useState(true);
   const [isServiceDetailVisible, setIsServiceDetailVisible] = useState(true);
+  const [canvasNotification, setCanvasNotification] = useState<{ id: number; message: string }>();
   const [locatedNodeRequest, setLocatedNodeRequest] = useState<{ nodeId: string; requestId: number }>();
   const [focusedCheck, setFocusedCheck] = useState<{ tab: Extract<AnalysisTab, "issues" | "configuration" | "security">; findingId: string; requestId: number }>();
   const [checkRefreshVersion, setCheckRefreshVersion] = useState(0);
@@ -225,6 +310,16 @@ export function AppShell() {
   const architectureValidation = assessArchitectureValidation(scenarioState.graph, servicesById);
   const configurationValidation = assessArchitectureConfiguration(scenarioState.graph);
   const securityAssessment = assessArchitectureSecurity(scenarioState.graph, servicesById);
+  const selectedPlacementNode = scenarioState.selection.nodeIds && scenarioState.selection.nodeIds.length === 1
+    ? scenarioState.graph.nodes.find((node) => node.id === scenarioState.selection.nodeIds?.[0])
+    : scenarioState.selection.nodeId
+      ? scenarioState.graph.nodes.find((node) => node.id === scenarioState.selection.nodeId)
+      : undefined;
+  const placementZoneIds = selectedPlacementNode ? getValidPlacementZoneIds(scenarioState.graph, selectedPlacementNode.serviceId) : [];
+  const invalidPlacementZoneIds = selectedPlacementNode && placementZoneIds.length > 0
+    ? scenarioState.graph.zones.filter((zone) => !placementZoneIds.includes(zone.id)).map((zone) => zone.id)
+    : [];
+  const placementHint = selectedPlacementNode ? getPlacementHint(selectedPlacementNode.serviceId) : undefined;
 
   function handleRefreshChecks() {
     setCheckRefreshVersion((version) => version + 1);
@@ -266,6 +361,15 @@ export function AppShell() {
     scenarioStateRef.current = scenarioState;
   }, [scenarioState]);
 
+  useEffect(() => {
+    if (!canvasNotification) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setCanvasNotification(undefined), 2200);
+    return () => window.clearTimeout(timeoutId);
+  }, [canvasNotification]);
+
   function commitScenarioState(nextState: LearnerScenarioState, options?: { trackHistory?: boolean; clearRedo?: boolean }) {
     const currentState = scenarioStateRef.current;
 
@@ -294,39 +398,76 @@ export function AppShell() {
     commitScenarioState(updater(scenarioStateRef.current), options);
   }
 
+  function getNextAddedServiceLabel(currentState: LearnerScenarioState, service: CloudService) {
+    return getNextServiceLabel(currentState.graph.nodes.map((node) => node.label), service.name);
+  }
+
   function handleAddService(service: CloudService) {
+    let addedLabel: string | undefined;
+
     applyScenarioStateChange((currentState) => {
       const selectedZoneId = currentState.selection.zoneId;
-      const zoneId = selectedZoneId ?? getSuggestedZoneId(service);
-      const position = getSuggestedNodePosition(currentState.graph, zoneId);
+      const preferredZoneId = selectedZoneId ?? getSuggestedZoneId(service);
+      const zoneId = resolvePlacementZoneId(currentState.graph, service.id, preferredZoneId);
+
+      if (!zoneId) {
+        setConnectionMessage(`Add a valid scope before placing ${service.name}. ${getPlacementHint(service.id) ?? ""}`.trim());
+        return currentState;
+      }
+
+      const position = getSuggestedNodePosition(currentState.graph, zoneId, service.id);
       const nextNodeId = `node-${currentState.graph.nodes.length + 1}`;
+      const nextLabel = getNextAddedServiceLabel(currentState, service);
 
       const nextState = updateScenarioGraph(currentState, (graph) =>
         addNode(graph, {
           id: nextNodeId,
           serviceId: service.id,
-          label: service.name,
+          label: nextLabel,
           position,
           zoneId,
         }),
       );
 
+      if (nextState.graph.nodes.length > currentState.graph.nodes.length) {
+        addedLabel = nextLabel;
+      }
+
       return selectNode(nextState, nextNodeId);
     }, { trackHistory: true });
+
+    if (addedLabel) {
+      setCanvasNotification({ id: Date.now(), message: `${addedLabel} added to canvas` });
+    }
   }
 
   function createDroppedServiceState(currentState: LearnerScenarioState, service: CloudService, position: CanvasPoint) {
-    const zoneId = getZoneIdForPosition(currentState.graph, position) ?? currentState.selection.zoneId ?? getSuggestedZoneId(service);
+    const rawZoneId = getZoneIdForPosition(currentState.graph, position) ?? currentState.selection.zoneId ?? getSuggestedZoneId(service);
+    const zoneId = resolvePlacementZoneId(currentState.graph, service.id, rawZoneId);
+
+    if (!zoneId) {
+      setConnectionMessage(`Add a valid scope before placing ${service.name}. ${getPlacementHint(service.id) ?? ""}`.trim());
+      return currentState;
+    }
+
+    const resolvedPosition = canPlaceServiceInZone(currentState.graph, service.id, rawZoneId)
+      ? position
+      : getSuggestedNodePosition(currentState.graph, zoneId, service.id);
     const nextNodeId = `node-${currentState.graph.nodes.length + 1}`;
+    const nextLabel = getNextAddedServiceLabel(currentState, service);
     const nextState = updateScenarioGraph(currentState, (graph) =>
       addNode(graph, {
         id: nextNodeId,
         serviceId: service.id,
-        label: service.name,
-        position,
+        label: nextLabel,
+        position: resolvedPosition,
         zoneId,
       }),
     );
+
+    if (nextState.graph.nodes.length > currentState.graph.nodes.length) {
+      setCanvasNotification({ id: Date.now(), message: `${nextLabel} added to canvas` });
+    }
 
     return selectNode(nextState, nextNodeId);
   }
@@ -334,6 +475,25 @@ export function AppShell() {
   function handleInspectService(service: CloudService) {
     setInspectedServiceId(service.id);
     setIsServiceDetailVisible(true);
+  }
+
+  function handleInspectZoneService(zoneId: ArchitectureZoneId) {
+    const zone = scenarioStateRef.current.graph.zones.find((entry) => entry.id === zoneId);
+
+    if (!zone) {
+      return;
+    }
+
+    if (zone.kind === "vpc") {
+      setInspectedServiceId("aws-vpc");
+      setIsServiceDetailVisible(true);
+      return;
+    }
+
+    if (zone.kind === "subnet") {
+      setInspectedServiceId(zone.config?.subnetAccess === "public" ? "aws-public-subnet" : "aws-private-subnet");
+      setIsServiceDetailVisible(true);
+    }
   }
 
   function handleCanvasPaletteDrop(payload: PaletteDropPayload, position: CanvasPoint) {
@@ -377,15 +537,34 @@ export function AppShell() {
             y: Math.max(2, Math.min(94 - defaultLayout.height, dropPosition.y - (defaultLayout.height / 2))),
           }
         : defaultLayout;
-      const nextState = updateScenarioGraph(currentState, (graph) => addZone(graph, {
-        id,
-        provider: currentState.provider,
-        kind: resolvedKind,
-        label,
-        parentZoneId,
-        layout,
-        config: resolvedKind === "subnet" ? { subnetAccess: subnetAccess ?? "private" } : undefined,
-      }));
+      const nextState = updateScenarioGraph(currentState, (graph) => {
+        const graphWithZone = addZone(graph, {
+          id,
+          provider: currentState.provider,
+          kind: resolvedKind,
+          label,
+          parentZoneId,
+          layout,
+          config: resolvedKind === "subnet" ? {
+            subnetAccess: subnetAccess ?? "private",
+            routeTableName: `${subnetAccess ?? "private"}-${count}`,
+            routeTarget: subnetAccess === "public" ? "internet-gateway" : "nat-gateway",
+          } : undefined,
+        });
+
+        if (resolvedKind !== "subnet" || graphWithZone === graph) {
+          return graphWithZone;
+        }
+
+        return addRouteTable(graphWithZone, {
+          id: `rtb-${id}`,
+          provider: currentState.provider,
+          label: `${subnetAccess ?? "private"}-${count}`,
+          vpcId: findParentVpcId(graphWithZone, id),
+          associatedSubnetIds: [id],
+          routes: createDefaultRoutesForSubnet(graphWithZone, id, subnetAccess ?? "private"),
+        });
+      });
       return { ...nextState, selection: { zoneId: id } };
   }
 
@@ -393,10 +572,54 @@ export function AppShell() {
     applyScenarioStateChange((currentState) => createZoneState(currentState, kind), { trackHistory: true });
   }
 
+  function handleAddRouteTable() {
+    applyScenarioStateChange((currentState) => {
+      const selectedSubnet = currentState.selection.zoneId
+        ? currentState.graph.zones.find((zone) => zone.id === currentState.selection.zoneId && zone.kind === "subnet")
+        : undefined;
+      const targetSubnet = selectedSubnet
+        ?? currentState.graph.zones.find((zone) =>
+          zone.kind === "subnet"
+          && !(currentState.graph.routeTables ?? []).some((routeTable) => routeTable.associatedSubnetIds.includes(zone.id)),
+        )
+        ?? currentState.graph.zones.find((zone) => zone.kind === "subnet");
+
+      if (!targetSubnet) {
+        setConnectionMessage("Add a subnet before creating a route table.");
+        return currentState;
+      }
+
+      const existingRouteTable = (currentState.graph.routeTables ?? []).find((routeTable) => routeTable.associatedSubnetIds.includes(targetSubnet.id));
+
+      if (existingRouteTable) {
+        return selectRouteTable(currentState, existingRouteTable.id);
+      }
+
+      const routeTableId = `rtb-${targetSubnet.id}-${(currentState.graph.routeTables ?? []).length + 1}`;
+      const subnetAccess = targetSubnet.config?.subnetAccess ?? "private";
+      const nextState = updateScenarioGraph(currentState, (graph) => addRouteTable(graph, {
+        id: routeTableId,
+        provider: currentState.provider,
+        label: targetSubnet.config?.routeTableName ?? `${subnetAccess}-${(graph.routeTables ?? []).length + 1}`,
+        vpcId: findParentVpcId(graph, targetSubnet.id),
+        associatedSubnetIds: [targetSubnet.id],
+        routes: createDefaultRoutesForSubnet(graph, targetSubnet.id, subnetAccess),
+      }));
+
+      return selectRouteTable(nextState, routeTableId);
+    }, { trackHistory: true });
+  }
+
   function handleSelectZone(zoneId: ArchitectureZoneId) {
     setIsConnecting(false);
     setIsInspectorVisible(true);
     setScenarioState((currentState) => ({ ...currentState, selection: { zoneId } }));
+  }
+
+  function handleSelectRouteTable(routeTableId: ArchitectureRouteTableId) {
+    setIsConnecting(false);
+    setIsInspectorVisible(true);
+    applyScenarioStateChange((currentState) => selectRouteTable(currentState, routeTableId));
   }
 
   function handleDeleteSelectedZone() {
@@ -408,6 +631,12 @@ export function AppShell() {
   function handleUpdateSelectedZone(changes: Parameters<typeof updateZone>[2]) {
     applyScenarioStateChange((currentState) => currentState.selection.zoneId
       ? updateScenarioGraph(currentState, (graph) => updateZone(graph, currentState.selection.zoneId!, changes))
+      : currentState, { trackHistory: true });
+  }
+
+  function handleUpdateSelectedRouteTable(changes: Partial<Pick<ArchitectureRouteTable, "label" | "vpcId" | "associatedSubnetIds" | "routes">>) {
+    applyScenarioStateChange((currentState) => currentState.selection.routeTableId
+      ? updateScenarioGraph(currentState, (graph) => updateRouteTable(graph, currentState.selection.routeTableId!, changes))
       : currentState, { trackHistory: true });
   }
 
@@ -523,12 +752,16 @@ export function AppShell() {
           });
 
           const movedGraph = moveNode(nextGraph, selectedNodeId, nextPosition);
-          const nextZoneId = getZoneIdForPosition(nextGraph, nextPosition);
+          const rawZoneId = getZoneIdForPosition(nextGraph, nextPosition);
+          const nextZoneId = resolvePlacementZoneId(nextGraph, selectedNode.serviceId, rawZoneId ?? selectedNode.zoneId) ?? selectedNode.zoneId;
+          const resolvedPosition = canPlaceServiceInZone(nextGraph, selectedNode.serviceId, rawZoneId)
+            ? nextPosition
+            : (nextZoneId ? getSuggestedNodePosition(nextGraph, nextZoneId, selectedNode.serviceId) : selectedNode.position);
 
           nextGraph = {
             ...movedGraph,
             nodes: movedGraph.nodes.map((node) =>
-              node.id === selectedNodeId ? { ...node, zoneId: nextZoneId } : node,
+              node.id === selectedNodeId ? { ...node, position: resolvedPosition, zoneId: nextZoneId } : node,
             ),
           };
         }
@@ -577,12 +810,16 @@ export function AppShell() {
             : nextPosition;
 
           const movedGraph = moveNode(nextGraph, movedNodeId, resolvedPosition);
-          const nextZoneId = getZoneIdForPosition(nextGraph, resolvedPosition);
+          const rawZoneId = getZoneIdForPosition(nextGraph, resolvedPosition);
+          const nextZoneId = resolvePlacementZoneId(nextGraph, currentNode.serviceId, rawZoneId ?? currentNode.zoneId) ?? currentNode.zoneId;
+          const finalPosition = canPlaceServiceInZone(nextGraph, currentNode.serviceId, rawZoneId)
+            ? resolvedPosition
+            : (nextZoneId ? getSuggestedNodePosition(nextGraph, nextZoneId, currentNode.serviceId) : currentNode.position);
 
           nextGraph = {
             ...movedGraph,
             nodes: movedGraph.nodes.map((node) =>
-              node.id === movedNodeId ? { ...node, zoneId: nextZoneId } : node,
+              node.id === movedNodeId ? { ...node, position: finalPosition, zoneId: nextZoneId } : node,
             ),
           };
         }
@@ -905,7 +1142,7 @@ export function AppShell() {
   const selectedSourceService = selectedSourceNode
     ? servicesById.get(selectedSourceNode.serviceId)
     : undefined;
-  const connectableServiceNames = getConnectableServiceIds(selectedSourceService)
+  const connectableServiceNames = getConnectableServiceIds(selectedSourceService, servicesById)
     .map((serviceId) => servicesById.get(serviceId)?.name)
     .filter((name): name is string => Boolean(name));
   const safeConnectionHint = connectionMessage
@@ -917,6 +1154,7 @@ export function AppShell() {
 
   const selectedEdgeId = scenarioState.selection.edgeId;
   const selectedEdge = scenarioState.graph.edges.find((edge) => edge.id === selectedEdgeId);
+  const selectedRouteTable = (scenarioState.graph.routeTables ?? []).find((routeTable) => routeTable.id === scenarioState.selection.routeTableId);
   const inspectedService = servicesById.get(inspectedServiceId);
 
   function handleConnectionShortcut() {
@@ -1002,6 +1240,7 @@ export function AppShell() {
               mode={paletteMode}
               onModeChange={setPaletteMode}
               onAddService={handleAddService}
+              onAddRouteTable={handleAddRouteTable}
               onInspectService={handleInspectService}
               onAddZone={handleAddZone}
               onReorderZoneLayer={handleReorderZoneLayer}
@@ -1041,6 +1280,9 @@ export function AppShell() {
                   ...architectureValidation.issues.map((issue) => issue.zoneId).filter(Boolean) as string[],
                 ]),
               ]}
+              placementHint={placementHint}
+              placementZoneIds={placementZoneIds}
+              invalidPlacementZoneIds={invalidPlacementZoneIds}
               onDragNode={handleDragNode}
               onDropPaletteItem={handleCanvasPaletteDrop}
               isConnecting={isConnecting}
@@ -1058,13 +1300,17 @@ export function AppShell() {
               onSelectEdge={handleSelectEdge}
               onSelectNode={handleSelectNode}
               onSelectNodes={handleSelectNodes}
+              onSelectRouteTable={handleSelectRouteTable}
               onToggleNodeSelection={handleToggleNodeSelection}
               onUndo={handleUndo}
+              onInspectZoneService={handleInspectZoneService}
+              canvasNotification={canvasNotification}
               locatedNodeRequest={locatedNodeRequest}
               scenario={activeScenario}
               canRedo={canRedo}
               canUndo={canUndo}
               selectedEdgeId={selectedEdgeId}
+              selectedRouteTableId={scenarioState.selection.routeTableId}
               selectedNodeId={scenarioState.selection.nodeId}
               selectedNodeIds={selectedNodeIds}
               simulation={scenarioState.simulation}
@@ -1080,12 +1326,15 @@ export function AppShell() {
             {isInspectorVisible ? (
               <ArchitectureInspector
                 edge={selectedEdge}
+                graph={scenarioState.graph}
                 node={selectedSourceNode}
                 onClose={() => setIsInspectorVisible(false)}
                 onUpdateEdge={handleUpdateSelectedEdge}
                 onUpdateNodeConfig={handleUpdateSelectedNodeConfig}
                 onUpdateNodeLabel={handleUpdateSelectedNodeLabel}
+                onUpdateRouteTable={handleUpdateSelectedRouteTable}
                 onUpdateZone={handleUpdateSelectedZone}
+                routeTable={selectedRouteTable}
                 service={selectedSourceService}
                 servicesById={servicesById}
                 zone={scenarioState.graph.zones.find((zone) => zone.id === scenarioState.selection.zoneId)}

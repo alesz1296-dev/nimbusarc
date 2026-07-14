@@ -1,6 +1,6 @@
 import { isValidElement } from "react";
 import { awsGroupIcons, awsServiceIcons } from "@ningz6/cloudscape-aws-icons";
-import { Monitor, UserRound } from "lucide-react";
+import { Globe, Monitor, UserRound } from "lucide-react";
 
 const serviceIconMap: Record<string, string> = {
   "aws-route-53": "aws-route-53",
@@ -77,12 +77,13 @@ export const serviceAccentColorMap: Record<string, string> = {
 const actorIconMap = {
   "aws-user": UserRound,
   "aws-client": Monitor,
+  "aws-public-subnet": Globe,
 } satisfies Record<string, typeof UserRound>;
 
 type AwsServiceIconProps = {
   serviceId: string;
   label: string;
-  size?: "sm" | "md";
+  size?: "sm" | "md" | "lg";
 };
 
 export function AwsServiceIcon({ serviceId, label, size = "md" }: AwsServiceIconProps) {

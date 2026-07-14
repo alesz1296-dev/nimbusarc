@@ -3,6 +3,7 @@ import { useMemo, useRef, useState, type DragEvent } from "react";
 import { ChevronDown, ChevronUp, CircleHelp, Search } from "lucide-react";
 import { Panel } from "../../ui/Panel";
 import { AwsServiceIcon } from "../../ui/AwsServiceIcon";
+import { isNetworkPaletteService } from "./networkPaletteServices";
 
 type ServicePaletteProps = {
   services: CloudService[];
@@ -12,26 +13,30 @@ type ServicePaletteProps = {
 };
 
 export function ServicePalette({ services, onAddService, onInspectService, activeNodeCount }: ServicePaletteProps) {
+  const paletteServices = useMemo(
+    () => services.filter((service) => !isNetworkPaletteService(service.id)),
+    [services],
+  );
   const [query, setQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const serviceListRef = useRef<HTMLDivElement | null>(null);
   const categories = useMemo(() => {
-    const counts = services.reduce<Record<string, number>>((acc, service) => {
+    const counts = paletteServices.reduce<Record<string, number>>((acc, service) => {
       acc[service.category] = (acc[service.category] ?? 0) + 1;
       return acc;
     }, {});
 
     return [
-      { name: "All", count: services.length },
+      { name: "All", count: paletteServices.length },
       ...Object.entries(counts)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([name, count]) => ({ name, count })),
     ];
-  }, [services]);
+  }, [paletteServices]);
   const visibleServices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return services.filter((service) => {
+    return paletteServices.filter((service) => {
       const matchesCategory = selectedCategory === "All" || service.category === selectedCategory;
       const searchableText = [
         service.name,
@@ -45,7 +50,7 @@ export function ServicePalette({ services, onAddService, onInspectService, activ
 
       return matchesCategory && (!normalizedQuery || searchableText.includes(normalizedQuery));
     });
-  }, [query, selectedCategory, services]);
+  }, [paletteServices, query, selectedCategory]);
 
   function scrollServiceList(direction: "up" | "down") {
     const container = serviceListRef.current;
@@ -101,19 +106,27 @@ export function ServicePalette({ services, onAddService, onInspectService, activ
         <div className="service-list" id="services" ref={serviceListRef}>
         {visibleServices.map((service) => (
           <div className="service-tile" key={service.id}>
-            <button
+            <div
+              aria-label={`Add ${service.name} to the canvas`}
               className="service-tile__main"
               draggable
               onDragStart={(event) => handleServiceDragStart(event, service)}
               onClick={() => onAddService(service)}
-              type="button"
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onAddService(service);
+                }
+              }}
+              role="button"
+              tabIndex={0}
             >
               <AwsServiceIcon label={service.name} serviceId={service.id} />
               <span className="service-tile__content">
                 <span>{service.name}</span>
                 <small>{service.category}</small>
               </span>
-            </button>
+            </div>
             <button
               aria-label={`More information about ${service.name}`}
               className="service-tile__info"
@@ -142,7 +155,7 @@ export function ServicePalette({ services, onAddService, onInspectService, activ
   );
 }
 
-function handleServiceDragStart(event: DragEvent<HTMLButtonElement>, service: CloudService) {
+function handleServiceDragStart(event: DragEvent<HTMLElement>, service: CloudService) {
   event.dataTransfer.effectAllowed = "copy";
   event.dataTransfer.setData("application/x-nimbusarc-palette", JSON.stringify({
     type: "service",
