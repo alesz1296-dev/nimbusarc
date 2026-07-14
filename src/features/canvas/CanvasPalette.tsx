@@ -10,6 +10,7 @@ type CanvasPaletteProps = {
   onModeChange: (mode: "services" | "network" | "security" | "costs" | "quotas" | "issues" | "configuration") => void;
   highlightedFindingId?: string;
   highlightedFindingVersion?: number;
+  refreshKey?: number;
   services: CloudService[];
   servicesById: Map<string, CloudService>;
   graph: ArchitectureGraph;
@@ -22,6 +23,7 @@ type CanvasPaletteProps = {
   onReorderZoneLayer: (zoneId: string, direction: "up" | "down") => void;
   onSelectZone: (zoneId: string) => void;
   onDeleteSelectedZone: () => void;
+  onRefreshChecks?: () => void;
 };
 
 export function CanvasPalette({ mode, onModeChange, ...props }: CanvasPaletteProps) {
@@ -45,6 +47,8 @@ export function CanvasPalette({ mode, onModeChange, ...props }: CanvasPalettePro
           graph={props.graph}
           highlightedFindingId={props.highlightedFindingId}
           highlightedFindingVersion={props.highlightedFindingVersion}
+          refreshKey={props.refreshKey}
+          onRefreshChecks={props.onRefreshChecks}
           servicesById={props.servicesById}
           title="Security and Access"
         />
@@ -56,6 +60,8 @@ export function CanvasPalette({ mode, onModeChange, ...props }: CanvasPalettePro
           graph={props.graph}
           highlightedFindingId={props.highlightedFindingId}
           highlightedFindingVersion={props.highlightedFindingVersion}
+          refreshKey={props.refreshKey}
+          onRefreshChecks={props.onRefreshChecks}
           servicesById={props.servicesById}
           title="Architecture Errors"
         />
@@ -67,6 +73,8 @@ export function CanvasPalette({ mode, onModeChange, ...props }: CanvasPalettePro
           graph={props.graph}
           highlightedFindingId={props.highlightedFindingId}
           highlightedFindingVersion={props.highlightedFindingVersion}
+          refreshKey={props.refreshKey}
+          onRefreshChecks={props.onRefreshChecks}
           servicesById={props.servicesById}
           title="Configuration Checks"
         />
@@ -76,6 +84,8 @@ export function CanvasPalette({ mode, onModeChange, ...props }: CanvasPalettePro
           eyebrow="AWS SAA"
           fixedTab="cost"
           graph={props.graph}
+          refreshKey={props.refreshKey}
+          onRefreshChecks={props.onRefreshChecks}
           servicesById={props.servicesById}
           title="Costs"
         />
@@ -85,6 +95,8 @@ export function CanvasPalette({ mode, onModeChange, ...props }: CanvasPalettePro
           eyebrow="AWS SAA"
           fixedTab="quotas"
           graph={props.graph}
+          refreshKey={props.refreshKey}
+          onRefreshChecks={props.onRefreshChecks}
           servicesById={props.servicesById}
           title="Service Quotas"
         />

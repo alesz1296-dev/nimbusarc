@@ -1,6 +1,7 @@
 import type { CloudService } from "../../../domain/types";
+import { awsServiceLearning } from "./serviceLearning";
 
-export const awsServices: CloudService[] = [
+const rawAwsServices: CloudService[] = [
   {
     id: "aws-user",
     provider: "aws",
@@ -533,3 +534,8 @@ export const awsServices: CloudService[] = [
     allowedConnections: ["aws-lambda", "aws-ec2", "aws-rds", "aws-kms"],
   },
 ];
+
+export const awsServices: CloudService[] = rawAwsServices.map((service) => ({
+  ...service,
+  learningProfile: awsServiceLearning[service.id],
+}));

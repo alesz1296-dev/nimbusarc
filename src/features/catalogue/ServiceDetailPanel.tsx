@@ -42,15 +42,24 @@ export function ServiceDetailPanel({ service, onClose }: ServiceDetailPanelProps
           </div>
         </div>
 
-        <ServiceAccordion open items={[service.shortDescription]} title="Summary" />
+        <ServiceAccordion open items={service.learningProfile?.summary ?? [service.shortDescription]} title="Summary" />
         <ServiceAccordion
-          items={service.configurationGuidance ?? ["Review placement, connectivity, security, and scaling choices for this service."]}
+          items={service.learningProfile?.configuration ?? service.configurationGuidance ?? ["Review placement, connectivity, security, and scaling choices for this service."]}
           title="Configuration"
         />
-        <ServiceAccordion items={service.examSignals} title="Features" />
-        <ServiceAccordion items={service.commonTraps} title="Limitations" />
-        <ServiceAccordion items={getAdvancedConfiguration(service)} title="Advanced configuration" />
-        <ServiceAccordion items={service.commonUseCases} title="Use Cases" />
+        <ServiceAccordion items={service.learningProfile?.features ?? service.examSignals} title="Features" />
+        <ServiceAccordion items={service.learningProfile?.limitations ?? service.commonTraps} title="Limitations" />
+        <ServiceAccordion items={service.learningProfile?.advancedConfiguration ?? getAdvancedConfiguration(service)} title="Advanced configuration" />
+        <ServiceAccordion items={service.learningProfile?.useCases ?? service.commonUseCases} title="Use Cases" />
+        <ServiceAccordion
+          items={service.allowedConnections.map((connectionId) => {
+            const label = connectionId.replace(/^aws-/, "").split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+            return service.learningProfile?.connectionNotes?.[connectionId]
+              ? `${label}: ${service.learningProfile.connectionNotes[connectionId]}`
+              : label;
+          })}
+          title="Allowed connections"
+        />
 
         <a className="service-detail__docs" href={service.docsUrl} rel="noreferrer" target="_blank">
           Official documentation

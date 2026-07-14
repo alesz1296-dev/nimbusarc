@@ -1,5 +1,5 @@
-import { useState, type ChangeEvent } from "react";
-import { ExternalLink, X } from "lucide-react";
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
+import { ExternalLink, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import type { ArchitectureEdge, ArchitectureEdgeKind, ArchitectureNode, ArchitectureNodeConfig, ArchitectureZone } from "../../domain/graph";
 import type { CacheEntryPreview, CloudService, DocumentCollectionPreview, RelationalTablePreview } from "../../domain/types";
 import { AwsServiceIcon } from "../../ui/AwsServiceIcon";
@@ -360,7 +360,11 @@ function getAllowedConnectionLabels(service: CloudService, servicesById?: Map<st
     return ["No explicit connections modeled yet for this service."];
   }
 
-  return service.allowedConnections.map((serviceId) => servicesById?.get(serviceId)?.name ?? formatServiceId(serviceId));
+  return service.allowedConnections.map((serviceId) => {
+    const label = servicesById?.get(serviceId)?.name ?? formatServiceId(serviceId);
+    const note = service.learningProfile?.connectionNotes?.[serviceId];
+    return note ? `${label}: ${note}` : label;
+  });
 }
 
 function formatServiceId(serviceId: string) {
@@ -369,6 +373,26 @@ function formatServiceId(serviceId: string) {
     .split("-")
     .map((part) => part.length <= 3 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function getAdvancedConfiguration(service: CloudService): string[] {
+  const categoryGuidance: Record<string, string> = {
+    Actors: "Keep the actor outside AWS trust boundaries and model the request origin explicitly.",
+    Networking: "Validate route tables, CIDR overlap, ingress and egress paths, and Availability Zone placement.",
+    Edge: "Review cache behavior, origin failover, TLS policy, invalidation, and regional coverage.",
+    Compute: "Review runtime limits, health checks, scaling signals, deployment strategy, and failure recovery.",
+    Storage: "Review lifecycle transitions, data protection, access policies, replication, and recovery objectives.",
+    Database: "Review capacity mode, backup and restore behavior, failover, replicas, indexes, and quotas.",
+    "Application Integration": "Review retry behavior, idempotency, delivery guarantees, ordering, throttling, and dead-letter handling.",
+    Analytics: "Review retention, partitioning, throughput, replay behavior, encryption, and downstream failure handling.",
+    Security: "Review policy scope, auditability, rotation, service integration, and least-privilege boundaries.",
+    Operations: "Review retention, alert thresholds, cross-account collection, dashboards, and incident response paths.",
+  };
+
+  return [
+    categoryGuidance[service.category] ?? "Review service quotas, regional availability, IAM permissions, and failure behavior.",
+    "Confirm current quotas, pricing, and regional feature availability in the official documentation.",
+  ];
 }
 
 export function ArchitectureInspector({
@@ -384,6 +408,29 @@ export function ArchitectureInspector({
   onUpdateZone,
 }: ArchitectureInspectorProps) {
   const [zoneErrors, setZoneErrors] = useState<Record<string, string>>({});
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(390);
+  const resizeStateRef = useRef<{ startX: number; startWidth: number } | undefined>(undefined);
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const resizeState = resizeStateRef.current;
+      if (!resizeState) return;
+      setPanelWidth(Math.max(300, Math.min(820, resizeState.startWidth - (event.clientX - resizeState.startX))));
+    };
+    const handlePointerUp = () => {
+      resizeStateRef.current = undefined;
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, []);
+
   const closeAction = onClose ? (
     <button
       aria-label="Close inspector"
@@ -394,12 +441,49 @@ export function ArchitectureInspector({
       <X aria-hidden="true" size={15} />
     </button>
   ) : undefined;
+  const inspectorActions = (
+    <div className="panel__actions-group">
+      <button aria-label={isExpanded ? "Restore inspector size" : "Expand inspector over canvas"} className="panel__icon-button" onClick={() => setIsExpanded((expanded) => !expanded)} title={isExpanded ? "Restore inspector size" : "Expand inspector over canvas"} type="button">
+        {isExpanded ? <Minimize2 aria-hidden="true" size={15} /> : <Maximize2 aria-hidden="true" size={15} />}
+      </button>
+      <button aria-label="Collapse inspector" className="panel__icon-button" onClick={() => setIsCollapsed(true)} title="Collapse inspector" type="button">
+        <PanelRightClose aria-hidden="true" size={15} />
+      </button>
+      {closeAction}
+    </div>
+  );
+  const panelClassName = `inspector-panel ${isExpanded ? "inspector-panel--expanded" : ""}`.trim();
+  const panelStyle = { "--inspector-width": `${panelWidth}px` } as CSSProperties;
+  const resizeHandle = (
+    <button
+      aria-label="Resize inspector"
+      className="inspector-resize-handle"
+      onPointerDown={(event) => {
+        resizeStateRef.current = { startX: event.clientX, startWidth: panelWidth };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      title="Drag to resize inspector"
+      type="button"
+    />
+  );
+
+  if (isCollapsed) {
+    return (
+      <div className="inspector-collapsed">
+        <button aria-label="Expand inspector" className="inspector-collapsed__button" onClick={() => setIsCollapsed(false)} title="Expand inspector" type="button">
+          <PanelRightOpen aria-hidden="true" size={16} />
+        </button>
+        <span>Inspector</span>
+      </div>
+    );
+  }
 
   if (node) {
     const template = getServiceTemplate(service, node);
 
     return (
-      <Panel actions={closeAction} title="Inspector" eyebrow="Selected service">
+      <Panel className={panelClassName} style={panelStyle} actions={inspectorActions} title="Inspector" eyebrow="Selected service">
+        {resizeHandle}
         <div className="inspector">
           <div className="inspector__identity">
             <AwsServiceIcon label={node.label} serviceId={node.serviceId} size="md" />
@@ -422,26 +506,30 @@ export function ArchitectureInspector({
           </div>
           {service ? (
             <section className="inspector__learning">
-              <LearningAccordion items={[service.shortDescription]} open title="Summary" />
+              <LearningAccordion items={service.learningProfile?.summary ?? [service.shortDescription]} open title="Summary" />
               <LearningAccordion
-                items={service.examSignals.length > 0 ? service.examSignals : ["Review the primary capabilities this service is meant to provide in AWS architectures."]}
+                items={service.learningProfile?.features ?? (service.examSignals.length > 0 ? service.examSignals : ["Review the primary capabilities this service is meant to provide in AWS architectures."])}
                 title="Features"
               />
               <LearningAccordion
-                items={service.commonUseCases.length > 0 ? service.commonUseCases : ["Use this service where its managed behavior clearly reduces operational overhead or improves architecture fit."]}
+                items={service.learningProfile?.useCases ?? (service.commonUseCases.length > 0 ? service.commonUseCases : ["Use this service where its managed behavior clearly reduces operational overhead or improves architecture fit."])}
                 title="Use cases"
               />
               <LearningAccordion
-                items={service.commonTraps.length > 0 ? service.commonTraps : ["Review service limits, tradeoffs, and anti-patterns before placing it in the design."]}
+                items={service.learningProfile?.limitations ?? (service.commonTraps.length > 0 ? service.commonTraps : ["Review service limits, tradeoffs, and anti-patterns before placing it in the design."])}
                 title="Limitations"
               />
               <LearningAccordion
-                items={service.configurationGuidance?.length ? service.configurationGuidance : ["Review placement, connectivity, security, and scaling choices for this service."]}
+                items={service.learningProfile?.configuration ?? (service.configurationGuidance?.length ? service.configurationGuidance : ["Review placement, connectivity, security, and scaling choices for this service."])}
                 title="Configuration"
               />
               <LearningAccordion
                 items={getAllowedConnectionLabels(service, servicesById)}
                 title="Allowed connections"
+              />
+              <LearningAccordion
+                items={service.learningProfile?.advancedConfiguration ?? getAdvancedConfiguration(service)}
+                title="Advanced configuration"
               />
               <a className="inspector__docs-link" href={service.docsUrl} rel="noreferrer" target="_blank">
                 Official AWS documentation
@@ -531,7 +619,8 @@ export function ArchitectureInspector({
 
   if (zone) {
     return (
-      <Panel actions={closeAction} title="Inspector" eyebrow="Selected architecture scope">
+      <Panel className={panelClassName} style={panelStyle} actions={inspectorActions} title="Inspector" eyebrow="Selected architecture scope">
+        {resizeHandle}
         <div className="inspector">
           <div className="inspector__identity">
             <div className={`zone-inspector__swatch zone-inspector__swatch--${zone.kind}`} />
@@ -707,7 +796,8 @@ export function ArchitectureInspector({
     };
 
     return (
-      <Panel actions={closeAction} title="Inspector" eyebrow="Selected connection">
+      <Panel className={panelClassName} style={panelStyle} actions={inspectorActions} title="Inspector" eyebrow="Selected connection">
+        {resizeHandle}
         <div className="inspector">
           <label className="inspector__field">
             <span>Flow label</span>
@@ -783,7 +873,8 @@ export function ArchitectureInspector({
   }
 
   return (
-    <Panel actions={closeAction} title="Inspector" eyebrow="Architecture canvas">
+    <Panel className={panelClassName} style={panelStyle} actions={inspectorActions} title="Inspector" eyebrow="Architecture canvas">
+      {resizeHandle}
       <p className="inspector__empty">Select a service or connection to inspect and configure it.</p>
     </Panel>
   );

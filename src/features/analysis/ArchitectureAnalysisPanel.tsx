@@ -17,6 +17,8 @@ type ArchitectureAnalysisPanelProps = {
   fixedTab?: AnalysisTab;
   highlightedFindingId?: string;
   highlightedFindingVersion?: number;
+  refreshKey?: number;
+  onRefreshChecks?: () => void;
   title?: string;
   eyebrow?: string;
 };
@@ -38,23 +40,23 @@ export function ArchitectureAnalysisPanel({
   fixedTab,
   highlightedFindingId,
   highlightedFindingVersion = 0,
+  refreshKey = 0,
+  onRefreshChecks,
   title = "Cost & Security",
   eyebrow = "Architecture analysis",
 }: ArchitectureAnalysisPanelProps) {
   const [activeTab, setActiveTab] = useState<AnalysisTab>(initialTab);
   const [assumptions, setAssumptions] = useState(initialAssumptions);
-  const [refreshVersion, setRefreshVersion] = useState(0);
   const [lastCheckedAt, setLastCheckedAt] = useState(() => new Date());
   const costEstimate = useMemo(() => estimateArchitectureCost(graph, servicesById, assumptions), [assumptions, graph, servicesById]);
-  const validation = useMemo(() => assessArchitectureValidation(graph, servicesById), [graph, servicesById, refreshVersion]);
-  const configuration = useMemo(() => assessArchitectureConfiguration(graph), [graph, refreshVersion]);
-  const security = useMemo(() => assessArchitectureSecurity(graph, servicesById), [graph, servicesById, refreshVersion]);
-  const quotas = useMemo(() => assessServiceQuotas(graph, servicesById), [graph, servicesById, refreshVersion]);
+  const validation = assessArchitectureValidation(graph, servicesById);
+  const configuration = assessArchitectureConfiguration(graph);
+  const security = assessArchitectureSecurity(graph, servicesById);
+  const quotas = assessServiceQuotas(graph, servicesById);
   const visibleTab = fixedTab ?? activeTab;
   useEffect(() => {
-    setRefreshVersion((version) => version + 1);
     setLastCheckedAt(new Date());
-  }, [graph]);
+  }, [graph, refreshKey]);
 
   useEffect(() => {
     if (!highlightedFindingId) {
@@ -67,8 +69,8 @@ export function ArchitectureAnalysisPanel({
   }, [highlightedFindingId, highlightedFindingVersion, visibleTab]);
 
   function refreshChecks() {
-    setRefreshVersion((version) => version + 1);
     setLastCheckedAt(new Date());
+    onRefreshChecks?.();
   }
   const closeAction = onClose ? (
     <button aria-label="Close architecture analysis" className="panel__close" onClick={onClose} type="button">

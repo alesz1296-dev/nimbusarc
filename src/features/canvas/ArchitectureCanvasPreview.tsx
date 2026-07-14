@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Link2, Lock, Play, Redo2, RotateCcw, Search, ShieldCheck, SlidersHorizontal, Trash2, Undo2, Unlink } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Download, FileStack, Link2, Lock, Play, Redo2, RotateCcw, Save, Search, ShieldCheck, SlidersHorizontal, Trash2, Undo2, Unlink, Upload } from "lucide-react";
 import type { ArchitectureEdgeId, ArchitectureGraph, ArchitectureZone, ArchitectureZoneId, FlowSimulationSnapshot } from "../../domain/graph";
 import type { ArchitectureIssue } from "../../domain/architectureValidation";
 import type { ConfigurationIssue } from "../../domain/configurationValidation";
@@ -8,6 +8,8 @@ import type { SecurityFinding } from "../../domain/securitySimulation";
 import type { Scenario } from "../../domain/types";
 import { Panel } from "../../ui/Panel";
 import { AwsServiceIcon, serviceAccentColorMap } from "../../ui/AwsServiceIcon";
+import { architectureTemplates } from "../../domain/architectureTemplates";
+import { parseArchitectureFile } from "../../domain/architecturePersistence";
 
 type CanvasCheckTab = "issues" | "configuration" | "security";
 
@@ -47,6 +49,10 @@ type ArchitectureCanvasPreviewProps = {
   onDropPaletteItem: (payload: { type: "service"; serviceId: string } | { type: "zone"; zoneKind: "region" | "vpc" | "availability-zone" | "subnet-public" | "subnet-private" }, position: { x: number; y: number }) => void;
   onUpdateZoneLayout: (zoneId: ArchitectureZoneId, layout: NonNullable<ArchitectureZone["layout"]>) => void;
   onResetGraph: () => void;
+  onSaveArchitecture: () => void;
+  onExportArchitecture: () => void;
+  onImportArchitecture: (graph: ArchitectureGraph) => void;
+  onApplyTemplate: (graph: ArchitectureGraph) => void;
   onRedo: () => void;
   onRunSimulation: () => void;
   onOpenCheck: (tab: CanvasCheckTab, findingId: string) => void;
@@ -118,6 +124,10 @@ export function ArchitectureCanvasPreview({
   onDropPaletteItem,
   onUpdateZoneLayout,
   onResetGraph,
+  onSaveArchitecture,
+  onExportArchitecture,
+  onImportArchitecture,
+  onApplyTemplate,
   onRedo,
   onRunSimulation,
   onOpenCheck,
@@ -150,6 +160,8 @@ export function ArchitectureCanvasPreview({
     start: { x: number; y: number };
     current: { x: number; y: number };
   } | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [fileMessage, setFileMessage] = useState<string>();
 
   const architectureIssuesByNode = new Map<string, ArchitectureIssue[]>();
   const architectureIssuesByZone = new Map<string, ArchitectureIssue[]>();
@@ -529,6 +541,53 @@ export function ArchitectureCanvasPreview({
       eyebrow={scenario.title}
       actions={
         <div className="canvas-toolbar" aria-label="Canvas controls">
+          <button className="icon-button" onClick={() => { onSaveArchitecture(); setFileMessage("Saved locally"); }} title="Save architecture locally" type="button">
+            <Save size={16} aria-hidden="true" />
+          </button>
+          <button className="icon-button" onClick={onExportArchitecture} title="Export architecture JSON" type="button">
+            <Download size={16} aria-hidden="true" />
+          </button>
+          <button className="icon-button" onClick={() => importInputRef.current?.click()} title="Import architecture JSON" type="button">
+            <Upload size={16} aria-hidden="true" />
+          </button>
+          <input
+            accept="application/json,.json"
+            hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                try {
+                  onImportArchitecture(parseArchitectureFile(String(reader.result)));
+                  setFileMessage(`Imported ${file.name}`);
+                } catch (error) {
+                  setFileMessage(error instanceof Error ? error.message : "Unable to import architecture file");
+                }
+              };
+              reader.readAsText(file);
+            }}
+            ref={importInputRef}
+            type="file"
+          />
+          <label className="canvas-toolbar__template" title="Start from a common architecture pattern">
+            <FileStack aria-hidden="true" size={15} />
+            <select
+              aria-label="Architecture templates"
+              defaultValue=""
+              onChange={(event) => {
+                const template = architectureTemplates.find((candidate) => candidate.id === event.target.value);
+                if (!template) return;
+                onApplyTemplate(template.createGraph(scenario));
+                setFileMessage(`${template.name} loaded`);
+                event.currentTarget.value = "";
+              }}
+            >
+              <option value="">Templates</option>
+              {architectureTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+            </select>
+          </label>
           <button
             className="icon-button icon-button--run"
             disabled={graph.edges.length === 0}
@@ -789,6 +848,7 @@ export function ArchitectureCanvasPreview({
         }}
         role="presentation"
       >
+        {fileMessage ? <p aria-live="polite" className="canvas-preview__file-message">{fileMessage}</p> : null}
         <button
           aria-label="Pan canvas up"
           className="canvas-pan-button canvas-pan-button--top"

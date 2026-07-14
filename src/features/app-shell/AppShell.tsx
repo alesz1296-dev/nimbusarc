@@ -7,7 +7,9 @@ import { assessArchitectureConfiguration } from "../../domain/configurationValid
 import { assessArchitectureSecurity } from "../../domain/securitySimulation";
 import { canServicesConnect, getConnectableServiceIds, inferConnectionBlueprint } from "../../domain/connectionRules";
 import { simulateArchitectureGraph } from "../../domain/flowSimulation";
+import { createIdleSimulation } from "../../domain/flowSimulation";
 import { createPreviewLearnerScenarioState } from "../../domain/graphFactory";
+import { downloadArchitecture, loadSavedArchitecture, saveArchitecture } from "../../domain/architecturePersistence";
 import {
   addNode,
   addZone,
@@ -196,9 +198,13 @@ function getNextAvailableLabel(existingLabels: string[], sourceLabel: string) {
 export function AppShell() {
   const activeProvider = providerRegistry.find((provider) => provider.enabled);
   const servicesById = new Map(services.map((service) => [service.id, service]));
-  const [scenarioState, setScenarioState] = useState(() =>
-    createPreviewLearnerScenarioState(activeScenario),
-  );
+  const [scenarioState, setScenarioState] = useState(() => {
+    const savedGraph = loadSavedArchitecture();
+    const initialState = createPreviewLearnerScenarioState(activeScenario);
+    return savedGraph?.provider === activeScenario.provider
+      ? { ...initialState, graph: savedGraph, status: "editing" as const }
+      : initialState;
+  });
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState<string>();
   const [inspectedServiceId, setInspectedServiceId] = useState<string>(services[0]?.id ?? "");
@@ -208,6 +214,7 @@ export function AppShell() {
   const [isServiceDetailVisible, setIsServiceDetailVisible] = useState(true);
   const [locatedNodeRequest, setLocatedNodeRequest] = useState<{ nodeId: string; requestId: number }>();
   const [focusedCheck, setFocusedCheck] = useState<{ tab: Extract<AnalysisTab, "issues" | "configuration" | "security">; findingId: string; requestId: number }>();
+  const [checkRefreshVersion, setCheckRefreshVersion] = useState(0);
   const scenarioStateRef = useRef(scenarioState);
   const undoStackRef = useRef<LearnerScenarioState[]>([]);
   const redoStackRef = useRef<LearnerScenarioState[]>([]);
@@ -215,9 +222,45 @@ export function AppShell() {
   const [, setHistoryVersion] = useState(0);
   const canUndo = undoStackRef.current.length > 0;
   const canRedo = redoStackRef.current.length > 0;
-  const architectureValidation = useMemo(() => assessArchitectureValidation(scenarioState.graph, servicesById), [scenarioState.graph, servicesById]);
-  const configurationValidation = useMemo(() => assessArchitectureConfiguration(scenarioState.graph), [scenarioState.graph]);
-  const securityAssessment = useMemo(() => assessArchitectureSecurity(scenarioState.graph, servicesById), [scenarioState.graph, servicesById]);
+  const architectureValidation = assessArchitectureValidation(scenarioState.graph, servicesById);
+  const configurationValidation = assessArchitectureConfiguration(scenarioState.graph);
+  const securityAssessment = assessArchitectureSecurity(scenarioState.graph, servicesById);
+
+  function handleRefreshChecks() {
+    setCheckRefreshVersion((version) => version + 1);
+  }
+
+  function handleSaveArchitecture() {
+    saveArchitecture(scenarioStateRef.current.graph);
+  }
+
+  function handleExportArchitecture() {
+    downloadArchitecture(scenarioStateRef.current.graph, `${activeScenario.id}.json`);
+  }
+
+  function handleImportArchitecture(graph: ArchitectureGraph) {
+    if (graph.provider !== activeScenario.provider) {
+      return;
+    }
+
+    applyScenarioStateChange((currentState) => ({
+      ...currentState,
+      graph: { ...graph, scenarioId: activeScenario.id },
+      selection: {},
+      simulation: createIdleSimulation(),
+      status: "editing",
+    }), { trackHistory: true });
+  }
+
+  function handleApplyTemplate(graph: ArchitectureGraph) {
+    applyScenarioStateChange((currentState) => ({
+      ...currentState,
+      graph: { ...graph, scenarioId: activeScenario.id },
+      selection: {},
+      simulation: createIdleSimulation(),
+      status: "editing",
+    }), { trackHistory: true });
+  }
 
   useEffect(() => {
     scenarioStateRef.current = scenarioState;
@@ -955,6 +998,7 @@ export function AppShell() {
               graph={scenarioState.graph}
               highlightedFindingId={focusedCheck?.tab === paletteMode ? focusedCheck.findingId : undefined}
               highlightedFindingVersion={focusedCheck?.requestId}
+              refreshKey={checkRefreshVersion}
               mode={paletteMode}
               onModeChange={setPaletteMode}
               onAddService={handleAddService}
@@ -963,6 +1007,7 @@ export function AppShell() {
               onReorderZoneLayer={handleReorderZoneLayer}
               onSelectZone={handleSelectZone}
               onDeleteSelectedZone={handleDeleteSelectedZone}
+              onRefreshChecks={handleRefreshChecks}
               services={services}
               servicesById={servicesById}
               zones={scenarioState.graph.zones}
@@ -977,6 +1022,10 @@ export function AppShell() {
               canConnectNode={canConnectToNode}
               connectionHint={safeConnectionHint}
               graph={scenarioState.graph}
+              onSaveArchitecture={handleSaveArchitecture}
+              onExportArchitecture={handleExportArchitecture}
+              onImportArchitecture={handleImportArchitecture}
+              onApplyTemplate={handleApplyTemplate}
               onOpenCheck={handleOpenCheck}
               validationIssueCount={architectureValidation.issues.length + configurationValidation.issues.length + securityAssessment.findings.filter((finding) => finding.severity !== "pass").length}
               validationIssueNodeIds={[

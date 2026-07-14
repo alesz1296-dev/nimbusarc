@@ -238,6 +238,75 @@ a {
   gap: var(--space-5);
 }
 
+.inspector-panel {
+  position: relative;
+  width: min(100%, var(--inspector-width, 390px));
+  min-width: 300px;
+}
+
+.inspector-panel--expanded {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  bottom: 24px;
+  z-index: 800;
+  display: flex;
+  width: min(var(--inspector-width, 560px), calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
+  flex-direction: column;
+  box-shadow: 0 18px 60px rgba(15, 23, 42, 0.2);
+}
+
+.inspector-panel--expanded .panel__body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.inspector-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  z-index: 20;
+  width: 12px;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.inspector-resize-handle:hover,
+.inspector-resize-handle:focus-visible {
+  border-left: 2px solid var(--color-accent);
+  outline: 0;
+}
+
+.inspector-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 48px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  box-shadow: var(--shadow-panel);
+}
+
+.inspector-collapsed__button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--color-accent-strong);
+  cursor: pointer;
+}
+
 .canvas-column {
   min-width: 0;
 }
@@ -994,6 +1063,45 @@ a {
 .canvas-toolbar__text-button:hover {
   border-color: var(--color-accent);
   color: var(--color-accent);
+}
+
+.canvas-toolbar__template {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0 7px;
+  background: var(--color-surface);
+  color: var(--color-muted);
+}
+
+.canvas-toolbar__template select {
+  max-width: 132px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.canvas-preview__file-message {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 300;
+  margin: 0;
+  transform: translateX(-50%);
+  border: 1px solid rgba(20, 119, 212, 0.2);
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--color-accent-strong);
+  font-size: 0.7rem;
+  font-weight: 800;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
 }
 
 .zone-inspector__swatch {

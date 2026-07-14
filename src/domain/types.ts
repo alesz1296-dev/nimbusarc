@@ -47,6 +47,16 @@ export type DatabaseInspectionModel =
       entries: CacheEntryPreview[];
     };
 
+export type ServiceLearningProfile = {
+  summary: string[];
+  features: string[];
+  useCases: string[];
+  limitations: string[];
+  configuration: string[];
+  advancedConfiguration: string[];
+  connectionNotes?: Record<string, string>;
+};
+
 export type CloudService = {
   id: string;
   provider: CloudProvider;
@@ -60,6 +70,7 @@ export type CloudService = {
   commonTraps: string[];
   docsUrl: string;
   allowedConnections: string[];
+  learningProfile?: ServiceLearningProfile;
   databaseInspection?: DatabaseInspectionModel;
 };
 
