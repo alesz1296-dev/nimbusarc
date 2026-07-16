@@ -70,6 +70,68 @@ const routeTargetServiceMap: Partial<Record<ArchitectureRoute["targetType"], str
   "vpc-endpoint": ["aws-vpc-endpoint"],
 };
 
+function getZoneById(graph: ArchitectureGraph, zoneId?: string) {
+  return zoneId ? graph.zones.find((zone) => zone.id === zoneId) : undefined;
+}
+
+function getZoneAncestry(graph: ArchitectureGraph, zoneId?: string) {
+  const ancestry: ArchitectureZone[] = [];
+  let cursor = getZoneById(graph, zoneId);
+
+  while (cursor) {
+    ancestry.push(cursor);
+    cursor = getZoneById(graph, cursor.parentZoneId);
+  }
+
+  return ancestry;
+}
+
+function getNodeVpcId(graph: ArchitectureGraph, node: ArchitectureNode) {
+  return getZoneAncestry(graph, node.zoneId).find((zone) => zone.kind === "vpc")?.id;
+}
+
+function nodeIsDirectlyPlacedInZoneKind(graph: ArchitectureGraph, node: ArchitectureNode, kind: ArchitectureZone["kind"]) {
+  return getZoneById(graph, node.zoneId)?.kind === kind;
+}
+
+function nodeIsInSubnetAccess(graph: ArchitectureGraph, node: ArchitectureNode, subnetAccess: "public" | "private") {
+  return getZoneAncestry(graph, node.zoneId).some((zone) => zone.kind === "subnet" && zone.config?.subnetAccess === subnetAccess);
+}
+
+function getEligibleRouteTargets(
+  graph: ArchitectureGraph | undefined,
+  routeTable: ArchitectureRouteTable,
+  targetType: ArchitectureRoute["targetType"],
+) {
+  if (!graph) {
+    return [];
+  }
+
+  const expectedServiceIds = routeTargetServiceMap[targetType] ?? [];
+
+  return graph.nodes.filter((node) => {
+    if (!expectedServiceIds.includes(node.serviceId)) {
+      return false;
+    }
+
+    const nodeVpcId = getNodeVpcId(graph, node);
+
+    if (routeTable.vpcId && nodeVpcId && nodeVpcId !== routeTable.vpcId) {
+      return false;
+    }
+
+    if (targetType === "internet-gateway") {
+      return nodeIsDirectlyPlacedInZoneKind(graph, node, "vpc");
+    }
+
+    if (targetType === "nat-gateway") {
+      return nodeIsInSubnetAccess(graph, node, "public");
+    }
+
+    return true;
+  });
+}
+
 type InspectorField =
   | { kind: "toggle"; key: keyof ArchitectureNodeConfig; label: string }
   | { kind: "number"; key: keyof ArchitectureNodeConfig; label: string; min?: number; max?: number; step?: number }
@@ -695,10 +757,12 @@ export function ArchitectureInspector({
             <div className="inspector__section-body">
               {routeTable.routes.map((route) => (
                 (() => {
-                  const targetServiceIds = routeTargetServiceMap[route.targetType] ?? [];
-                  const eligibleTargets = targetServiceIds.length > 0
-                    ? (graph?.nodes ?? []).filter((candidate) => targetServiceIds.includes(candidate.serviceId))
-                    : [];
+                  const eligibleTargets = getEligibleRouteTargets(graph, routeTable, route.targetType);
+                  const emptyTargetMessage = route.targetType === "internet-gateway"
+                    ? "Place an Internet Gateway on this VPC boundary to select it here."
+                    : route.targetType === "nat-gateway"
+                      ? "Place a NAT Gateway in a public subnet in this VPC to select it here."
+                      : "No matching placed resource exists yet.";
 
                   return (
                 <section className="route-row" key={route.id}>
@@ -733,7 +797,7 @@ export function ArchitectureInspector({
                           <option key={target.id} value={target.id}>{target.label}</option>
                         ))}
                       </select>
-                      {eligibleTargets.length === 0 ? <small>No matching placed gateway exists yet.</small> : null}
+                      {eligibleTargets.length === 0 ? <small>{emptyTargetMessage}</small> : null}
                     </label>
                   ) : null}
                   <label className="inspector__field">

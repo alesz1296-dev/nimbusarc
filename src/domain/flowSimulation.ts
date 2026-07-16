@@ -1,6 +1,9 @@
 import type {
   ArchitectureEdge,
   ArchitectureGraph,
+  ArchitectureNode,
+  ArchitectureRoute,
+  ArchitectureRouteTable,
   ArchitectureZone,
   EdgeSimulationResult,
   FlowSimulationSnapshot,
@@ -31,6 +34,10 @@ function getZone(graph: ArchitectureGraph, zoneId?: string) {
   return graph.zones.find((zone) => zone.id === zoneId);
 }
 
+function getNode(graph: ArchitectureGraph, nodeId?: string) {
+  return graph.nodes.find((node) => node.id === nodeId);
+}
+
 function findZoneChain(graph: ArchitectureGraph, zoneId?: string) {
   const chain: ArchitectureZone[] = [];
   let cursor = getZone(graph, zoneId);
@@ -41,6 +48,217 @@ function findZoneChain(graph: ArchitectureGraph, zoneId?: string) {
   }
 
   return chain;
+}
+
+function findSubnetForNode(graph: ArchitectureGraph, node?: ArchitectureNode) {
+  return findZoneChain(graph, node?.zoneId).find((zone) => zone.kind === "subnet");
+}
+
+function findVpcForNode(graph: ArchitectureGraph, node?: ArchitectureNode) {
+  return findZoneChain(graph, node?.zoneId).find((zone) => zone.kind === "vpc");
+}
+
+function findRouteTableForSubnet(graph: ArchitectureGraph, subnetId?: string) {
+  return subnetId ? (graph.routeTables ?? []).find((routeTable) => routeTable.associatedSubnetIds.includes(subnetId)) : undefined;
+}
+
+function findDefaultRoute(routeTable?: ArchitectureRouteTable) {
+  return routeTable?.routes.find((route) => route.destination === "0.0.0.0/0" || route.destination === "::/0");
+}
+
+function describeRouteTarget(route: ArchitectureRoute, graph: ArchitectureGraph) {
+  if (route.targetId) {
+    const targetNode = getNode(graph, route.targetId);
+
+    if (targetNode) {
+      return targetNode.label;
+    }
+  }
+
+  switch (route.targetType) {
+    case "internet-gateway":
+      return "Internet Gateway";
+    case "nat-gateway":
+      return "NAT Gateway";
+    case "transit-gateway":
+      return "Transit Gateway";
+    case "vpn-gateway":
+      return "VPN Gateway";
+    case "vpc-endpoint":
+      return "VPC Endpoint";
+    case "egress-only-igw":
+      return "Egress-only Internet Gateway";
+    default:
+      return "local";
+  }
+}
+
+function nodeIsInPublicSubnet(graph: ArchitectureGraph, node?: ArchitectureNode) {
+  return findZoneChain(graph, node?.zoneId).some((zone) => zone.kind === "subnet" && zone.config?.subnetAccess === "public");
+}
+
+function nodeIsPlacedOnVpcBoundary(graph: ArchitectureGraph, node?: ArchitectureNode) {
+  return getZone(graph, node?.zoneId)?.kind === "vpc";
+}
+
+function hasSameVpc(graph: ArchitectureGraph, left?: ArchitectureNode, right?: ArchitectureNode) {
+  const leftVpc = findVpcForNode(graph, left)?.id;
+  const rightVpc = findVpcForNode(graph, right)?.id;
+
+  return Boolean(leftVpc && rightVpc && leftVpc === rightVpc);
+}
+
+function validateNatGatewayPath(graph: ArchitectureGraph, workloadNode: ArchitectureNode, natNode: ArchitectureNode) {
+  if (!hasSameVpc(graph, workloadNode, natNode)) {
+    return `${workloadNode.label} and ${natNode.label} are not in the same VPC`;
+  }
+
+  const workloadSubnet = findSubnetForNode(graph, workloadNode);
+
+  if (!workloadSubnet) {
+    return `${workloadNode.label} is not placed in a subnet, so it has no route table path`;
+  }
+
+  const routeTable = findRouteTableForSubnet(graph, workloadSubnet.id);
+  const defaultRoute = findDefaultRoute(routeTable);
+
+  if (!defaultRoute) {
+    return `${workloadSubnet.label} has no default route to reach ${natNode.label}`;
+  }
+
+  if (defaultRoute.targetType !== "nat-gateway") {
+    return `${workloadSubnet.label} routes ${defaultRoute.destination} to ${describeRouteTarget(defaultRoute, graph)} instead of a NAT Gateway`;
+  }
+
+  if (defaultRoute.targetId && defaultRoute.targetId !== natNode.id) {
+    return `${workloadSubnet.label} routes to a different NAT Gateway than ${natNode.label}`;
+  }
+
+  if (!nodeIsInPublicSubnet(graph, natNode)) {
+    return `${natNode.label} is not in a public subnet`;
+  }
+
+  return undefined;
+}
+
+function validateInternetGatewayPath(graph: ArchitectureGraph, workloadNode: ArchitectureNode, igwNode: ArchitectureNode) {
+  if (!hasSameVpc(graph, workloadNode, igwNode)) {
+    return `${workloadNode.label} and ${igwNode.label} are not in the same VPC`;
+  }
+
+  if (!nodeIsPlacedOnVpcBoundary(graph, igwNode)) {
+    return `${igwNode.label} is not placed on the VPC boundary`;
+  }
+
+  const workloadSubnet = findSubnetForNode(graph, workloadNode);
+
+  if (!workloadSubnet) {
+    return `${workloadNode.label} is not placed in a subnet, so it has no route table path`;
+  }
+
+  const routeTable = findRouteTableForSubnet(graph, workloadSubnet.id);
+  const defaultRoute = findDefaultRoute(routeTable);
+
+  if (!defaultRoute) {
+    return `${workloadSubnet.label} has no default route to reach the Internet Gateway`;
+  }
+
+  if (defaultRoute.targetType === "internet-gateway") {
+    if (defaultRoute.targetId && defaultRoute.targetId !== igwNode.id) {
+      return `${workloadSubnet.label} routes to a different Internet Gateway than ${igwNode.label}`;
+    }
+
+    return undefined;
+  }
+
+  if (defaultRoute.targetType !== "nat-gateway") {
+    return `${workloadSubnet.label} routes ${defaultRoute.destination} to ${describeRouteTarget(defaultRoute, graph)} instead of an Internet path`;
+  }
+
+  const natNode = defaultRoute.targetId ? getNode(graph, defaultRoute.targetId) : undefined;
+
+  if (!natNode) {
+    return `${workloadSubnet.label} needs a selected NAT Gateway before it can reach ${igwNode.label}`;
+  }
+
+  const natPathBlock = validateNatGatewayPath(graph, workloadNode, natNode);
+
+  if (natPathBlock) {
+    return natPathBlock;
+  }
+
+  const natSubnet = findSubnetForNode(graph, natNode);
+  const natRouteTable = findRouteTableForSubnet(graph, natSubnet?.id);
+  const natDefaultRoute = findDefaultRoute(natRouteTable);
+
+  if (!natDefaultRoute) {
+    return `${natSubnet?.label ?? natNode.label} has no default route to an Internet Gateway`;
+  }
+
+  if (natDefaultRoute.targetType !== "internet-gateway") {
+    return `${natSubnet?.label ?? natNode.label} routes ${natDefaultRoute.destination} to ${describeRouteTarget(natDefaultRoute, graph)} instead of an Internet Gateway`;
+  }
+
+  if (natDefaultRoute.targetId && natDefaultRoute.targetId !== igwNode.id) {
+    return `${natNode.label} egress points to a different Internet Gateway than ${igwNode.label}`;
+  }
+
+  return undefined;
+}
+
+function validateGatewayEdgePath(edge: ArchitectureEdge, graph: ArchitectureGraph) {
+  const source = getNode(graph, edge.sourceNodeId);
+  const target = getNode(graph, edge.targetNodeId);
+
+  if (!source || !target) {
+    return undefined;
+  }
+
+  const pair = new Set([source.serviceId, target.serviceId]);
+
+  if (pair.has("aws-nat-gateway") && pair.has("aws-internet-gateway")) {
+    const natNode = source.serviceId === "aws-nat-gateway" ? source : target;
+    const igwNode = source.serviceId === "aws-internet-gateway" ? source : target;
+    const natSubnet = findSubnetForNode(graph, natNode);
+    const natRouteTable = findRouteTableForSubnet(graph, natSubnet?.id);
+    const natDefaultRoute = findDefaultRoute(natRouteTable);
+
+    if (!nodeIsInPublicSubnet(graph, natNode)) {
+      return `${natNode.label} is not in a public subnet`;
+    }
+
+    if (!nodeIsPlacedOnVpcBoundary(graph, igwNode)) {
+      return `${igwNode.label} is not placed on the VPC boundary`;
+    }
+
+    if (!natDefaultRoute) {
+      return `${natSubnet?.label ?? natNode.label} has no default route to an Internet Gateway`;
+    }
+
+    if (natDefaultRoute.targetType !== "internet-gateway") {
+      return `${natSubnet?.label ?? natNode.label} routes ${natDefaultRoute.destination} to ${describeRouteTarget(natDefaultRoute, graph)} instead of an Internet Gateway`;
+    }
+
+    if (natDefaultRoute.targetId && natDefaultRoute.targetId !== igwNode.id) {
+      return `${natNode.label} egress points to a different Internet Gateway than ${igwNode.label}`;
+    }
+
+    return undefined;
+  }
+
+  if (pair.has("aws-nat-gateway")) {
+    const natNode = source.serviceId === "aws-nat-gateway" ? source : target;
+    const workloadNode = natNode.id === source.id ? target : source;
+    return validateNatGatewayPath(graph, workloadNode, natNode);
+  }
+
+  if (pair.has("aws-internet-gateway")) {
+    const igwNode = source.serviceId === "aws-internet-gateway" ? source : target;
+    const workloadNode = igwNode.id === source.id ? target : source;
+    return validateInternetGatewayPath(graph, workloadNode, igwNode);
+  }
+
+  return undefined;
 }
 
 function firstInvalidZone(graph: ArchitectureGraph, zoneId?: string) {
@@ -150,6 +368,11 @@ function isBlockedBy(edge: ArchitectureEdge, graph: ArchitectureGraph) {
 
   if (routeBlock) {
     return routeBlock;
+  }
+
+  const gatewayPathBlock = validateGatewayEdgePath(edge, graph);
+  if (gatewayPathBlock) {
+    return gatewayPathBlock;
   }
 
   const dnsBlock = dnsBlocksEdge(edge, graph);
